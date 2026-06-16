@@ -1,8 +1,19 @@
 #!/bin/bash
 
-# Read Ingress: Retrieves ingress configuration from Kubernetes cluster.
-# Queries ingress resources by service_id label and outputs YAML configuration.
+set -euo pipefail
 
-INGRESS_NAME=$(kubectl get ingress -n "$K8S_NAMESPACE" -l "service_id=$SERVICE_ID" -o jsonpath="{.items[0].metadata.name}")
+source "$SERVICE_PATH/scripts/istio/config"
 
-kubectl get ingress -n "$K8S_NAMESPACE" "$INGRESS_NAME" -o yaml
+LABEL="nullplatform.com/service-id=$SERVICE_ID"
+
+echo "=== HTTPRoutes (namespace: $K8S_NAMESPACE) ==="
+kubectl get httproutes -n "$K8S_NAMESPACE" -l "$LABEL" -o yaml 2>/dev/null || echo "(none found)"
+
+echo ""
+echo "=== AuthorizationPolicies (namespace: $GATEWAY_NAMESPACE) ==="
+kubectl get authorizationpolicies -n "$GATEWAY_NAMESPACE" -l "$LABEL" -o yaml 2>/dev/null || echo "(none found)"
+
+echo ""
+echo "=== RequestAuthentication (namespace: $GATEWAY_NAMESPACE) ==="
+kubectl get requestauthentication -n "$GATEWAY_NAMESPACE" \
+  -l "nullplatform.com/managed-by=http-route-access-control" -o yaml 2>/dev/null || echo "(none found)"
