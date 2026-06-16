@@ -37,11 +37,6 @@
                                                 "elements": [
                                                     {
                                                         "type": "Control",
-                                                        "label": "Visibility",
-                                                        "scope": "#/properties/visibility"
-                                                    },
-                                                    {
-                                                        "type": "Control",
                                                         "label": "Path",
                                                         "scope": "#/properties/path"
                                                     },
@@ -74,18 +69,11 @@
                         "type": "object",
                         "required": [
                             "methods",
-                            "visibility",
                             "path",
                             "scope",
                             "groups"
                         ],
                         "properties": {
-                            "visibility": {
-                                "type": "string",
-                                "title": "Visibility",
-                                "enum": ["public", "private"],
-                                "description": "Determines whether this route is exposed through the public or private gateway."
-                            },
                             "path": {
                                 "type": "string",
                                 "title": "Path",
@@ -97,7 +85,7 @@
                                 "title": "Scope",
                                 "description": "Scope name where the rules apply.",
                                 "additionalKeywords": {
-                                    "enum": "(.visibility // \"public\") as $v | [.scopes[]? | select(.visibility == $v)] | map(.slug) | if length == 0 then [\"No scopes available for selected environment\"] else . end"
+                                    "enum": "[.scopes[]?.slug] | if length == 0 then [\"No scopes available for selected environment\"] else . end"
                                 }
                             },
                             "methods": {
