@@ -1,0 +1,30 @@
+steps:
+  - name: "find k8s namespace"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/fetch_provider_data"
+    output:
+      - name: K8S_NAMESPACE
+        type: environment
+  - name: "build context"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/build_context"
+    output:
+      - name: SERVICE_ID
+        type: environment
+      - name: SERVICE_SLUG
+        type: environment
+      - name: ACTION_ID
+        type: environment
+      - name: ACTION_NAME
+        type: environment
+      - name: LINK_ID
+        type: environment
+      - name: LINK_NAME
+        type: environment
+      - name: SCOPE_ID
+        type: environment
+      - name: RULE_PATH
+        type: environment
+  - name: read
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/read_ingress"

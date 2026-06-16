@@ -1,0 +1,172 @@
+#!/bin/bash
+
+echo "=== DEBUG: Starting sync_exposer script ==="
+
+APPLICATION_NRN=$(jq -r .application.nrn <<< "$CONTEXT")
+
+echo "SERVICE SPECIFICATION SLUG: $SERVICE_SPECIFICATION_SLUG, APPLICATION_NRN: $APPLICATION_NRN"
+
+# Step 1: Get service specification by slug
+echo "DEBUG: Fetching service specifications..."
+SERVICE_SPECS=$(np service specification list --nrn "$APPLICATION_NRN" --type dependency --format json)
+SERVICE_SPEC=$(jq -c --arg slug "$SERVICE_SPECIFICATION_SLUG" '
+  .results
+  | map(select(.slug == $slug))
+  | .[0]
+' <<< "$SERVICE_SPECS")
+
+SERVICE_SPEC_ID=$(jq -r .id <<< "$SERVICE_SPEC")
+
+if [[ -z "$SERVICE_SPEC_ID" || "$SERVICE_SPEC_ID" == "null" ]]; then
+  echo "Error: Could not find service specification with slug '$SERVICE_SPECIFICATION_SLUG'"
+  exit 1
+fi
+
+echo "DEBUG: SERVICE_SPEC_ID=$SERVICE_SPEC_ID"
+
+# Step 2: Get service instance that matches the SERVICE_SPEC_ID
+echo "DEBUG: Fetching services for application..."
+SERVICES=$(np service list --nrn "$APPLICATION_NRN" --format json)
+
+SERVICE=$(jq -c --arg spec_id "$SERVICE_SPEC_ID" '
+  .results
+  | map(select(.specification_id == $spec_id))
+  | .[0]
+' <<< "$SERVICES")
+
+SERVICE_ID=$(jq -r .id <<< "$SERVICE")
+
+if [[ -z "$SERVICE_ID" || "$SERVICE_ID" == "null" ]]; then
+  echo "Could not find service instance for specification '$SERVICE_SPEC_ID', skipping exposer sync"
+  exit 0
+fi
+
+echo "DEBUG: SERVICE_ID=$SERVICE_ID"
+
+# Step 3: Get service attributes as parameters
+echo "DEBUG: Reading service attributes..."
+SERVICE_DATA=$(np service read --id "$SERVICE_ID" --format json)
+export PARAMETERS=$(jq -c .attributes <<< "$SERVICE_DATA")
+
+echo "DEBUG: PARAMETERS=$PARAMETERS"
+
+# Step 4: Get action specification with slug "update-<service-spec-slug>"
+ACTION_SLUG="update-$SERVICE_SPECIFICATION_SLUG"
+echo "DEBUG: Fetching action specifications (looking for slug: $ACTION_SLUG)..."
+SERVICE_ACTIONS=$(np service specification action specification list --serviceSpecificationId "$SERVICE_SPEC_ID" --format json)
+
+ACTION_SPEC=$(jq -c --arg slug "$ACTION_SLUG" '
+  .results
+  | map(select(.slug == $slug))
+  | .[0]
+' <<< "$SERVICE_ACTIONS")
+
+ACTION_SPEC_ID=$(jq -r .id <<< "$ACTION_SPEC")
+
+if [[ -z "$ACTION_SPEC_ID" || "$ACTION_SPEC_ID" == "null" ]]; then
+  echo "Error: Could not find action specification with slug '$ACTION_SLUG' for service specification '$SERVICE_SPEC_ID'"
+  exit 1
+fi
+
+echo "DEBUG: ACTION_SPEC_ID=$ACTION_SPEC_ID"
+
+# Step 5: Create service action with parameters (with retry for concurrency)
+echo "DEBUG: Creating service action..."
+
+MAX_CREATE_RETRIES=10
+RETRY_DELAY=5
+create_attempt=0
+ACTION_ID=""
+
+while [[ -z "$ACTION_ID" || "$ACTION_ID" == "null" ]]; do
+  ((create_attempt++))
+  echo "DEBUG: Create attempt $create_attempt/$MAX_CREATE_RETRIES"
+
+  if [ "$create_attempt" -gt $MAX_CREATE_RETRIES ]; then
+    echo "Error: Maximum number of create attempts (${MAX_CREATE_RETRIES}) reached. Could not create action."
+    exit 1
+  fi
+
+  # Add delay before retry (except on first attempt)
+  if [ "$create_attempt" -gt 1 ]; then
+    echo "DEBUG: Waiting ${RETRY_DELAY} seconds before retry..."
+    sleep $RETRY_DELAY
+  fi
+
+  # Try to create the action
+  ACTION_RESPONSE=$(np service action create --serviceId "$SERVICE_ID" --body "$(jq -n --argjson params "$PARAMETERS" --arg spec_id "$ACTION_SPEC_ID" '{name: "update", parameters: $params, specification_id: $spec_id}')" --format json 2>&1 || true)
+
+  # Check if response contains an error about action already in progress
+  if echo "$ACTION_RESPONSE" | grep -q "already an action with status.*in_progress"; then
+    echo "DEBUG: Action already in progress detected"
+
+    # Try to find the existing in_progress action
+    echo "DEBUG: Attempting to find existing in_progress action..."
+    EXISTING_ACTIONS=$(np service action list --serviceId "$SERVICE_ID" --format json)
+    EXISTING_ACTION=$(echo "$EXISTING_ACTIONS" | jq -c --arg spec_id "$ACTION_SPEC_ID" '
+      .results
+      | map(select(.specification_id == $spec_id and .status == "in_progress"))
+      | .[0]
+    ')
+
+    EXISTING_ACTION_ID=$(echo "$EXISTING_ACTION" | jq -r '.id // empty')
+
+    if [[ -n "$EXISTING_ACTION_ID" && "$EXISTING_ACTION_ID" != "null" ]]; then
+      echo "DEBUG: Found existing in_progress action with ID: $EXISTING_ACTION_ID"
+      ACTION_ID="$EXISTING_ACTION_ID"
+      echo "Using existing action instead of creating new one"
+      break
+    fi
+
+    echo "DEBUG: No existing action found, will retry..."
+  elif echo "$ACTION_RESPONSE" | grep -q '"error"'; then
+    echo "ERROR: Failed to create action: $ACTION_RESPONSE"
+    echo "DEBUG: Will retry after delay..."
+  else
+    # Success - extract action ID
+    ACTION_ID=$(echo "$ACTION_RESPONSE" | jq -r '.id // empty')
+
+    if [[ -n "$ACTION_ID" && "$ACTION_ID" != "null" ]]; then
+      echo "DEBUG: ACTION_ID=$ACTION_ID"
+      echo "Created endpoint exposer update action[id=$ACTION_ID], waiting for its completion"
+      break
+    else
+      echo "DEBUG: Could not extract ACTION_ID from response: $ACTION_RESPONSE"
+      echo "DEBUG: Will retry after delay..."
+    fi
+  fi
+done
+
+# Step 6: Wait for action to complete
+MAX_ITERATIONS=20
+iteration=0
+
+echo "DEBUG: Starting polling loop for action status..."
+while true; do
+  ((iteration++))
+  echo "DEBUG: Iteration $iteration/$MAX_ITERATIONS"
+
+  if [ "$iteration" -gt $MAX_ITERATIONS ]; then
+    echo "Error: Maximum number of iterations (${MAX_ITERATIONS}) reached. Could not update the endpoint exposer."
+    exit 1
+  fi
+
+  echo "DEBUG: Reading action status..."
+  ACTION_RESPONSE=$(np service action read --serviceId "$SERVICE_ID" --id "$ACTION_ID" --format json)
+  ACTION_STATUS=$(jq -r .status <<< "$ACTION_RESPONSE")
+
+  echo "Checking endpoint exposer update action[id=$ACTION_ID, status=$ACTION_STATUS]"
+
+  if [[ "$ACTION_STATUS" == "success" ]]; then
+    echo "✅ Endpoint exposer successfully updated"
+    break
+  elif [[ "$ACTION_STATUS" == "failed" ]]; then
+    echo "❌ Could not update endpoint exposer, deployment will be rollbacked"
+    exit 1
+  fi
+
+  echo "DEBUG: Sleeping for 5 seconds..."
+  sleep 5
+done
+
+echo "=== DEBUG: sync_exposer script completed successfully ==="

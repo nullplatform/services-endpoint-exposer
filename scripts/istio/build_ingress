@@ -1,0 +1,28 @@
+#!/bin/bash
+
+# Build Ingress: Generates HTTPRoute resource from gomplate template.
+# Legacy script for creating basic HTTPRoute configuration with service domain.
+
+set -euo pipefail
+
+# Determine domain and output file
+SERVICE_DOMAIN=$(echo "$CONTEXT" | jq -r '.parameters.public_domain // .service.attributes.domain')
+HTTPROUTE_FILE="${OUTPUT_FILE:-$OUTPUT_DIR/httproute-$SERVICE_ID-public.yaml}"
+echo "Creating HTTPRoute for service $SERVICE_SLUG with domain $SERVICE_DOMAIN"
+echo "Output file: $HTTPROUTE_FILE"
+
+CONTEXT_PATH="$OUTPUT_DIR/context-$SERVICE_ID.json"
+
+echo "$CONTEXT" > "$CONTEXT_PATH"
+
+echo "Building Template: $TEMPLATE to $HTTPROUTE_FILE"
+
+gomplate -c .="$CONTEXT_PATH" \
+  --file "$TEMPLATE" \
+  --out "$HTTPROUTE_FILE"
+
+rm "$CONTEXT_PATH"
+
+# Export the file path for the workflow
+export HTTPROUTE_FILE
+echo "HTTPRoute created at: $HTTPROUTE_FILE"

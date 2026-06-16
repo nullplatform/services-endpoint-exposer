@@ -1,0 +1,5 @@
+steps:
+  - name: sync_exposer
+    type: script
+    file: "$OVERRIDES_PATH/deployment/sync_exposer"
+    after: apply traffic

@@ -1,0 +1,90 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Load configuration
+source "$SERVICE_PATH/scripts/istio/config"
+
+echo "TEMPLATE DIR: $OUTPUT_DIR, ACTION: $ACTION, DRY_RUN: $DRY_RUN"
+
+# Helper function to delete a resource if it exists
+delete_if_exists() {
+  local resource_type="$1"
+  local resource_name="$2"
+  local namespace="$3"
+
+  if kubectl get "$resource_type" "$resource_name" -n "$namespace" &>/dev/null; then
+    echo "Deleting $resource_type: $resource_name in namespace $namespace"
+    if [[ "$DRY_RUN" == "false" ]]; then
+      kubectl delete "$resource_type" "$resource_name" -n "$namespace"
+    fi
+  else
+    echo "$resource_type $resource_name not found in namespace $namespace (already deleted or never existed)"
+  fi
+}
+
+# Check for marker files indicating resources should be deleted
+if [[ -f "$OUTPUT_DIR/.httproute-public-deleted" ]]; then
+  echo "Public HTTPRoute marked for deletion"
+  delete_if_exists "httproute" "$SERVICE_SLUG-$SERVICE_ID-public" "$K8S_NAMESPACE"
+  rm "$OUTPUT_DIR/.httproute-public-deleted"
+fi
+
+if [[ -f "$OUTPUT_DIR/.httproute-private-deleted" ]]; then
+  echo "Private HTTPRoute marked for deletion"
+  delete_if_exists "httproute" "$SERVICE_SLUG-$SERVICE_ID-private" "$K8S_NAMESPACE"
+  rm "$OUTPUT_DIR/.httproute-private-deleted"
+fi
+
+if [[ -f "$OUTPUT_DIR/.authz-public-deleted" ]]; then
+  echo "Public AuthorizationPolicy marked for deletion"
+  delete_if_exists "authorizationpolicy" "$SERVICE_SLUG-$SERVICE_ID-authz-public" "$GATEWAY_NAMESPACE"
+  rm "$OUTPUT_DIR/.authz-public-deleted"
+fi
+
+if [[ -f "$OUTPUT_DIR/.authz-private-deleted" ]]; then
+  echo "Private AuthorizationPolicy marked for deletion"
+  delete_if_exists "authorizationpolicy" "$SERVICE_SLUG-$SERVICE_ID-authz-private" "$GATEWAY_NAMESPACE"
+  rm "$OUTPUT_DIR/.authz-private-deleted"
+fi
+
+# Collect all yaml files into a temporary directory for batch apply
+TEMP_APPLY_DIR="$OUTPUT_DIR/batch-apply"
+mkdir -p "$TEMP_APPLY_DIR"
+
+# Find all .yaml files that were not yet applied / deleted
+find "$OUTPUT_DIR" \( -path "*/apply" -o -path "*/delete" -o -path "*/batch-apply" \) -prune -o -type f -name "*.yaml" -print | while read -r TEMPLATE_FILE; do
+   FILENAME="$(basename "$TEMPLATE_FILE")"
+   cp "$TEMPLATE_FILE" "$TEMP_APPLY_DIR/$FILENAME"
+done
+
+# Count files to apply
+NUM_FILES=$(find "$TEMP_APPLY_DIR" -type f -name "*.yaml" | wc -l | tr -d ' ')
+
+if [[ "$NUM_FILES" -gt 0 ]]; then
+  echo "Applying $NUM_FILES resources..."
+  echo "kubectl $ACTION -f $TEMP_APPLY_DIR/"
+
+  if [[ "$DRY_RUN" == "false" ]]; then
+    # Apply all resources
+    kubectl "$ACTION" -f "$TEMP_APPLY_DIR/"
+  fi
+else
+  echo "No resources to apply"
+fi
+
+# Move processed files to apply directory
+find "$OUTPUT_DIR" \( -path "*/apply" -o -path "*/delete" -o -path "*/batch-apply" \) -prune -o -type f -name "*.yaml" -print | while read -r TEMPLATE_FILE; do
+   BASE_DIR="$(dirname "$TEMPLATE_FILE")"
+   FILENAME="$(basename "$TEMPLATE_FILE")"
+   DEST_DIR="${BASE_DIR}/$ACTION"
+
+   mkdir -p "$DEST_DIR"
+   mv "$TEMPLATE_FILE" "$DEST_DIR/$FILENAME"
+done
+
+# Cleanup temporary directory
+rm -rf "$TEMP_APPLY_DIR"
+
+# Note: DRY_RUN is for testing - we exit 0 even in dry run mode
+exit 0

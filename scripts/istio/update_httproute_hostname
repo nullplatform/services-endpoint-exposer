@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# Update HTTPRoute Hostname: Updates HTTPRoute hostname and parentRefs (gateway references).
+# Modifies existing HTTPRoute to point to the correct domain and gateway configuration.
+
+set -euo pipefail
+
+# Use DOMAIN and GATEWAY from configuration
+DOMAIN="${DOMAIN:-${PUBLIC_DOMAIN}}"
+GATEWAY="${GATEWAY:-gateway-public}"
+
+echo "=== Updating HTTPRoute hostname and parentRefs ==="
+echo "HTTPROUTE_FILE: $HTTPROUTE_FILE"
+echo "DOMAIN: $DOMAIN"
+echo "GATEWAY: $GATEWAY"
+
+# Read the HTTPRoute
+HTTPROUTE=$(cat "$HTTPROUTE_FILE")
+
+# Update the hostname with the new domain
+UPDATED_HR=$(echo "$HTTPROUTE" | yq eval ".spec.hostnames[0] = \"$DOMAIN\"" -)
+
+# Ensure parentRefs exists and points to the specified gateway
+UPDATED_HR=$(echo "$UPDATED_HR" | yq eval ".spec.parentRefs = [{\"name\": \"$GATEWAY\", \"namespace\": \"gateways\"}]" -)
+
+# Save the updated HTTPRoute
+echo "$UPDATED_HR" > "$HTTPROUTE_FILE"
+
+echo "HTTPRoute hostname updated to: $DOMAIN"
+echo "HTTPRoute parentRefs set to: $GATEWAY"
+
+# Debug: Verify the file was saved correctly
+echo "DEBUG: Verifying saved file..."
+SAVED_HOSTNAMES=$(cat "$HTTPROUTE_FILE" | yq eval '.spec.hostnames | length' -)
+SAVED_PARENTREFS=$(cat "$HTTPROUTE_FILE" | yq eval '.spec.parentRefs | length' -)
+echo "DEBUG: Saved file has $SAVED_HOSTNAMES hostnames"
+echo "DEBUG: Saved file has $SAVED_PARENTREFS parentRefs"

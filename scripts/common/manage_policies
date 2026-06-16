@@ -1,0 +1,67 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Delegates to AVP or Istio-JWT policy management based on AUTH_TYPE.
+# Required env vars:
+#   AUTH_TYPE  - "aws-avp" or "aws-cognito"
+#   ACTION     - "apply" (create/update) or "delete"
+
+ACTION="${ACTION:-apply}"
+
+echo "=== Managing policies: auth_type=$AUTH_TYPE action=$ACTION ==="
+
+case "$AUTH_TYPE" in
+  aws-avp)
+    case "$ACTION" in
+      apply)
+        source "$SERVICE_PATH/scripts/avp/ensure_policy_store"
+        source "$SERVICE_PATH/scripts/avp/create_policies"
+        ;;
+      delete)
+        source "$SERVICE_PATH/scripts/avp/delete_policies"
+        ;;
+      sync)
+        source "$SERVICE_PATH/scripts/avp/ensure_policy_store"
+        source "$SERVICE_PATH/scripts/avp/sync_policies"
+        ;;
+      *)
+        echo "ERROR: Unknown ACTION='$ACTION'"
+        exit 1
+        ;;
+    esac
+    ;;
+
+  aws-cognito)
+    case "$ACTION" in
+      apply)
+        source "$SERVICE_PATH/scripts/istio/build_request_authentication"
+        source "$SERVICE_PATH/scripts/istio/build_allow_policies"
+        source "$SERVICE_PATH/scripts/np/update_service_results"
+        ;;
+      sync)
+        # Delete existing AuthorizationPolicies first so removed/changed routes don't leave orphans
+        # RequestAuthentication is cluster-wide and intentionally not deleted on sync
+        source "$SERVICE_PATH/scripts/istio/delete_allow_policies"
+        source "$SERVICE_PATH/scripts/istio/build_request_authentication"
+        source "$SERVICE_PATH/scripts/istio/build_allow_policies"
+        source "$SERVICE_PATH/scripts/np/update_service_results"
+        ;;
+      delete)
+        source "$SERVICE_PATH/scripts/istio/delete_allow_policies"
+        source "$SERVICE_PATH/scripts/istio/delete_request_authentication"
+        ;;
+      *)
+        echo "ERROR: Unknown ACTION='$ACTION'"
+        exit 1
+        ;;
+    esac
+    ;;
+
+  *)
+    echo "ERROR: Unknown AUTH_TYPE='$AUTH_TYPE' (expected: aws-avp | aws-cognito)"
+    exit 1
+    ;;
+esac
+
+echo "=== Policy management complete ==="

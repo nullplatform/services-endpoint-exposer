@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# Configuration: Defines default gateway names and namespaces for public/private traffic routing.
+# These values can be overridden by environment variables to support different cluster configurations.
+
+# Gateway configuration
+# These values can be overridden by environment variables
+export PUBLIC_GATEWAY_NAME="${PUBLIC_GATEWAY_NAME:-gateway-public}"
+export PRIVATE_GATEWAY_NAME="${PRIVATE_GATEWAY_NAME:-gateway-private}"
+export GATEWAY_NAMESPACE="${GATEWAY_NAMESPACE:-gateways}"
+
+# OPA configuration
+export OPA_PROVIDER_NAME="${OPA_PROVIDER_NAME:-}"

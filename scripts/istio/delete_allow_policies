@@ -1,0 +1,23 @@
+#!/bin/bash
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+echo "=== Deleting Istio ALLOW AuthorizationPolicies for service $SERVICE_ID ==="
+
+POLICIES=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" \
+  -l "nullplatform.com/service-id=${SERVICE_ID},nullplatform.com/managed-by=http-route-access-control" \
+  -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+
+if [[ -z "$POLICIES" ]]; then
+  echo "No AuthorizationPolicies found for service $SERVICE_ID"
+  exit 0
+fi
+
+for POLICY_NAME in $POLICIES; do
+  kubectl delete authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE"
+  echo "✅ Deleted AuthorizationPolicy: $POLICY_NAME"
+done
+
+echo "=== AuthorizationPolicies deleted successfully ==="

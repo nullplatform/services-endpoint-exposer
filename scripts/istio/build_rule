@@ -1,0 +1,182 @@
+#!/bin/bash
+
+# Build Rule: Generates routing rules from Kubernetes services for a specific scope.
+# Supports single services and blue/green deployments with weighted traffic distribution.
+
+set -euo pipefail
+
+echo "=== DEBUG: Starting build_rule script ==="
+echo "DEBUG: K8S_NAMESPACE=$K8S_NAMESPACE"
+echo "DEBUG: SCOPE_ID=$SCOPE_ID"
+
+# Check for in-progress deployment
+echo "DEBUG: Checking for in-progress deployment..."
+SCOPE_JSON=$(np scope read --id "$SCOPE_ID" --format json)
+echo "DEBUG: Scope JSON retrieved"
+
+IN_PROGRESS_DEPLOYMENT=$(echo "$SCOPE_JSON" | jq -r '.in_progress_deployment // "null"')
+echo "DEBUG: IN_PROGRESS_DEPLOYMENT=$IN_PROGRESS_DEPLOYMENT"
+
+DEPLOYMENT_STATUS=""
+SWITCHED_TRAFFIC=0
+
+if [[ "$IN_PROGRESS_DEPLOYMENT" != "null" ]]; then
+    echo "DEBUG: Found in-progress deployment, fetching details..."
+    DEPLOYMENT_JSON=$(np deployment read --id "$IN_PROGRESS_DEPLOYMENT" --format json)
+    DEPLOYMENT_STATUS=$(echo "$DEPLOYMENT_JSON" | jq -r '.status')
+    SWITCHED_TRAFFIC=$(echo "$DEPLOYMENT_JSON" | jq -r '.strategy_data.desired_switched_traffic // 0')
+    echo "DEBUG: DEPLOYMENT_STATUS=$DEPLOYMENT_STATUS"
+    echo "DEBUG: SWITCHED_TRAFFIC=$SWITCHED_TRAFFIC"
+fi
+
+# Get all services and filter by scope_id in selector
+# Note: kubectl -l only filters by labels, not by selectors. scope_id is in the selector field.
+echo "DEBUG: Fetching all services from namespace..."
+ALL_SERVICES=$(kubectl get services -n "$K8S_NAMESPACE" -o json 2>&1)
+
+# Try to sanitize the JSON by removing any control characters or ANSI escape codes
+echo "DEBUG: Sanitizing JSON output..."
+ALL_SERVICES_CLEAN=$(echo "$ALL_SERVICES" | sed $'s/\x1b\\[[0-9;]*m//g' | tr -d '\000-\011\013-\037')
+echo "DEBUG: Cleaned JSON length: ${#ALL_SERVICES_CLEAN} characters"
+
+# Check if we have valid JSON
+if echo "$ALL_SERVICES_CLEAN" | jq empty 2>/dev/null; then
+    echo "DEBUG: JSON is valid after cleaning"
+    ALL_SERVICES="$ALL_SERVICES_CLEAN"
+else
+    echo "DEBUG: WARNING - JSON may still have issues, attempting to parse anyway"
+    ALL_SERVICES="$ALL_SERVICES_CLEAN"
+fi
+
+# Filter services by scope_id in selector (not label)
+echo "DEBUG: Filtering services with scope_id=$SCOPE_ID in selector..."
+SERVICES_JSON=$(echo "$ALL_SERVICES" | jq --arg scope_id "$SCOPE_ID" '{
+  apiVersion: .apiVersion,
+  kind: .kind,
+  metadata: .metadata,
+  items: [.items[] | select(.spec.selector.scope_id == $scope_id)]
+}')
+echo "DEBUG: Filtered services JSON"
+
+NUM_SERVICES=$(echo "$SERVICES_JSON" | jq '.items | length')
+echo "DEBUG: NUM_SERVICES=$NUM_SERVICES"
+
+if [[ "$NUM_SERVICES" -eq 0 ]]; then
+    echo "There is no service for scope_id=$SCOPE_ID. Publishing the rule with an empty backend"
+
+    SCOPE_RULE='{"service": {"name": "response-404", "port": { "number": 80} }}'
+    echo "DEBUG: SCOPE_RULE (no services)=$SCOPE_RULE"
+elif [[ "$NUM_SERVICES" -eq 1 ]]; then
+    echo "Found single service for scope_id=$SCOPE_ID"
+
+    echo "DEBUG: Extracting service name and port..."
+    SERVICE_NAME=$(echo "$SERVICES_JSON" | jq -r '.items[0].metadata.name')
+    SERVICE_PORT=$(echo "$SERVICES_JSON" | jq -r '.items[0].spec.ports[0].port')
+
+    echo "Service: $SERVICE_NAME, Port: $SERVICE_PORT"
+    echo "DEBUG: SERVICE_NAME=$SERVICE_NAME, SERVICE_PORT=$SERVICE_PORT"
+
+    echo "DEBUG: Building SCOPE_RULE for single service..."
+    SCOPE_RULE=$(jq -n \
+        --arg name "$SERVICE_NAME" \
+        --argjson port "$SERVICE_PORT" \
+        '{
+            service: {
+                name: $name,
+                port: {
+                    number: $port
+                }
+            }
+        }')
+    echo "DEBUG: SCOPE_RULE (single service)=$SCOPE_RULE"
+else
+    echo "Detected blue/green deployment with $NUM_SERVICES services for scope_id=$SCOPE_ID"
+
+    # Check if deployment is finalized - if so, only use the latest service
+    if [[ "$DEPLOYMENT_STATUS" == "finalized" ]]; then
+        echo "DEBUG: Deployment is finalized, using only the latest service"
+
+        # Use only the first service (latest deployment)
+        BLUE_SERVICE=$(echo "$SERVICES_JSON" | jq -r '.items[0].metadata.name')
+        BLUE_PORT=$(echo "$SERVICES_JSON" | jq -r '.items[0].spec.ports[0].port')
+
+        echo "Deployment finalized. Using service: $BLUE_SERVICE"
+        echo "DEBUG: SERVICE_NAME=$BLUE_SERVICE, SERVICE_PORT=$BLUE_PORT"
+
+        SCOPE_RULE=$(jq -n \
+            --arg name "$BLUE_SERVICE" \
+            --argjson port "$BLUE_PORT" \
+            '{
+                service: {
+                    name: $name,
+                    port: {
+                        number: $port
+                    }
+                }
+            }')
+        echo "DEBUG: SCOPE_RULE (finalized deployment)=$SCOPE_RULE"
+    else
+        # Extract blue and green services
+        echo "DEBUG: Extracting blue service details..."
+        BLUE_SERVICE=$(echo "$SERVICES_JSON" | jq -r '.items[0].metadata.name')
+        BLUE_PORT=$(echo "$SERVICES_JSON" | jq -r '.items[0].spec.ports[0].port')
+        echo "DEBUG: BLUE_SERVICE=$BLUE_SERVICE, BLUE_PORT=$BLUE_PORT"
+
+        echo "DEBUG: Extracting green service details..."
+        GREEN_SERVICE=$(echo "$SERVICES_JSON" | jq -r '.items[1].metadata.name')
+        GREEN_PORT=$(echo "$SERVICES_JSON" | jq -r '.items[1].spec.ports[0].port')
+        echo "DEBUG: GREEN_SERVICE=$GREEN_SERVICE, GREEN_PORT=$GREEN_PORT"
+
+        # Determine weights based on deployment status
+        if [[ "$DEPLOYMENT_STATUS" == "running" ]]; then
+            echo "DEBUG: Deployment is running, using switched_traffic for weights"
+            # New service (green) gets the switched traffic percentage
+            GREEN_WEIGHT=$SWITCHED_TRAFFIC
+            # Old service (blue) gets the remaining traffic
+            BLUE_WEIGHT=$((100 - SWITCHED_TRAFFIC))
+            echo "DEBUG: Using deployment weights - BLUE_WEIGHT=$BLUE_WEIGHT, GREEN_WEIGHT=$GREEN_WEIGHT"
+        else
+            # Fallback to annotation-based weights
+            echo "DEBUG: No running deployment, using annotation-based weights"
+            BLUE_WEIGHT=$(echo "$SERVICES_JSON" | jq -r '.items[0].metadata.annotations["weight"] // "100"' | sed 's/"//g')
+            GREEN_WEIGHT=$(echo "$SERVICES_JSON" | jq -r '.items[1].metadata.annotations["weight"] // "0"' | sed 's/"//g')
+            echo "DEBUG: BLUE_WEIGHT=$BLUE_WEIGHT (from annotation), GREEN_WEIGHT=$GREEN_WEIGHT (from annotation)"
+        fi
+
+            echo "Blue: $BLUE_SERVICE (weight: $BLUE_WEIGHT), Green: $GREEN_SERVICE (weight: $GREEN_WEIGHT)"
+
+        # Build blue/green annotation similar to ALB format
+        echo "DEBUG: Building SCOPE_RULE for blue/green deployment..."
+        SCOPE_RULE=$(jq -n \
+            --arg blue_service "$BLUE_SERVICE" \
+            --argjson blue_weight "$BLUE_WEIGHT" \
+            --arg green_service "$GREEN_SERVICE" \
+            --argjson green_weight "$GREEN_WEIGHT" \
+            --argjson port "$BLUE_PORT" \
+            '{
+                blue_green_annotation: {
+                    forward: {
+                        targetGroups: [
+                            {
+                                serviceName: $blue_service,
+                                weight: $blue_weight
+                            },
+                            {
+                                serviceName: $green_service,
+                                weight: $green_weight
+                            }
+                        ]
+                    }
+                },
+                service: {
+                    name: $blue_service,
+                    port: {
+                        number: $port
+                    }
+                }
+            }')
+        echo "DEBUG: SCOPE_RULE (blue/green)=$SCOPE_RULE"
+    fi
+fi
+
+export SCOPE_RULE

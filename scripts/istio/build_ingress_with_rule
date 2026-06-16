@@ -1,0 +1,406 @@
+#!/bin/bash
+
+# Build Ingress with Rule: Updates HTTPRoute by adding or replacing rules for specific paths.
+# Supports path types (Exact, PathPrefix, RegularExpression), HTTP methods, and blue/green backends.
+
+set -euo pipefail
+
+# Ensure a path starts with "/". The Kubernetes Gateway API rejects
+# non-absolute values for the `Exact` and `PathPrefix` match types with:
+#   spec.rules[N].matches[M].path: Invalid value: ...: value must be an
+#   absolute path and start with '/' when type one of ['Exact', 'PathPrefix']
+# Developers often enter "health" in the UI expecting it to become "/health",
+# so normalize here instead of surfacing a validator error per route.
+ensure_absolute_path() {
+  local path="$1"
+  if [[ "$path" != /* ]]; then
+    echo "/$path"
+  else
+    echo "$path"
+  fi
+}
+
+# Detect path type and convert path value accordingly
+# Returns: "type:value" format
+detect_path_type() {
+  local path="$1"
+
+  # Check for wildcard (*) - use PathPrefix
+  if [[ "$path" == *"*"* ]]; then
+    # Remove trailing /* or *
+    local prefix_path="${path%/*}"
+    if [[ -z "$prefix_path" ]]; then
+      prefix_path="/"
+    fi
+    prefix_path=$(ensure_absolute_path "$prefix_path")
+    echo "PathPrefix:$prefix_path"
+    return
+  fi
+
+  # Check for path parameters (:param) - use RegularExpression
+  if [[ "$path" == *:* ]]; then
+    # Replace :param with [^/]+
+    local regex_path="${path//:+([^\/])/[^/]+}"
+    # For bash pattern replacement, we need to handle it differently
+    regex_path=$(echo "$path" | sed 's/:[^/]*/[^\/]+/g')
+    # RegularExpression values are not required to be absolute by Gateway API,
+    # so we leave them untouched.
+    echo "RegularExpression:$regex_path"
+    return
+  fi
+
+  # Default: Exact match
+  path=$(ensure_absolute_path "$path")
+  echo "Exact:$path"
+}
+
+# Get priority for path type (lower number = higher priority)
+get_path_priority() {
+  local path="$1"
+
+  if [[ "$path" != *":"* && "$path" != *"*"* ]]; then
+    echo "1"  # Exact - highest priority
+  elif [[ "$path" == *":"* ]]; then
+    echo "2"  # RegularExpression - medium priority
+  else
+    echo "3"  # PathPrefix - lowest priority
+  fi
+}
+
+is_httproute_empty() {
+  local yaml_content="$1"
+
+  local num_rules
+  local backend_name
+  local backend_weight
+
+  num_rules=$(yq '.spec.rules | length' <<< "$yaml_content")
+  backend_name=$(yq '.spec.rules[0].backendRefs[0].name' <<< "$yaml_content")
+  backend_weight=$(yq '.spec.rules[0].backendRefs[0].weight' <<< "$yaml_content")
+
+  # An HTTPRoute is "empty" if it only has one rule with response-404 backend and weight 0
+  if [[ "$num_rules" -eq 1 && \
+        "$backend_name" == "response-404" && \
+        "$backend_weight" == "0" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
+create_http_rule() {
+  local rule_path="$1"
+  local service_json="$2"
+  local blue_green_config="$3"
+  local method="${4:-}"
+
+  local service_name
+  local service_port
+
+  service_name=$(echo "$service_json" | jq -r '.name')
+  service_port=$(echo "$service_json" | jq -r '.port.number // .port.name // 80')
+
+  # Detect path type and get the converted path value
+  local path_type_value
+  path_type_value=$(detect_path_type "$rule_path")
+  local path_type="${path_type_value%%:*}"
+  local path_value="${path_type_value#*:}"
+
+  echo "DEBUG: Original path='$rule_path', Detected type='$path_type', Converted value='$path_value'" >&2
+
+  # Build matches array with path and optional method
+  local matches_json
+
+  # Add method if specified
+  if [[ -n "$method" && "$method" != "null" ]]; then
+    matches_json=$(jq -n \
+      --arg path "$path_value" \
+      --arg path_type "$path_type" \
+      --arg method "$method" \
+      '[{
+        path: {
+          type: $path_type,
+          value: $path
+        },
+        method: $method
+      }]')
+  else
+    matches_json=$(jq -n \
+      --arg path "$path_value" \
+      --arg path_type "$path_type" \
+      '[{
+        path: {
+          type: $path_type,
+          value: $path
+        }
+      }]')
+  fi
+
+  # Check if there's blue/green configuration
+  if [[ "$blue_green_config" != "null" && -n "$blue_green_config" ]]; then
+    # Parse blue/green destinations and weights from the annotation
+    local blue_weight green_weight blue_service green_service
+
+    blue_weight=$(echo "$blue_green_config" | jq -r '.forward.targetGroups[0].weight // 100')
+    green_weight=$(echo "$blue_green_config" | jq -r '.forward.targetGroups[1].weight // 0')
+    blue_service=$(echo "$blue_green_config" | jq -r '.forward.targetGroups[0].serviceName')
+    green_service=$(echo "$blue_green_config" | jq -r '.forward.targetGroups[1].serviceName')
+
+    # Create rule with weighted backends (no URL rewrite)
+    jq -n \
+      --argjson matches "$matches_json" \
+      --arg blue_service "$blue_service" \
+      --arg green_service "$green_service" \
+      --arg service_port "$service_port" \
+      --argjson blue_weight "$blue_weight" \
+      --argjson green_weight "$green_weight" \
+      '{
+        matches: $matches,
+        backendRefs: [
+          {
+            name: $blue_service,
+            port: ($service_port | tonumber),
+            weight: $blue_weight
+          },
+          {
+            name: $green_service,
+            port: ($service_port | tonumber),
+            weight: $green_weight
+          }
+        ]
+      }'
+  else
+    # Single destination without blue/green (no URL rewrite)
+    jq -n \
+      --argjson matches "$matches_json" \
+      --arg service_name "$service_name" \
+      --arg service_port "$service_port" \
+      '{
+        matches: $matches,
+        backendRefs: [
+          {
+            name: $service_name,
+            port: ($service_port | tonumber)
+          }
+        ]
+      }'
+  fi
+}
+
+update_httproute_rule() {
+  local hr_yaml="$1"
+  local rule_path="$2"
+  local service_json="$3"
+  local blue_green_config="$4"
+
+  local service_name
+  local service_port
+  local updated_hr
+
+  service_name=$(echo "$service_json" | jq -r '.name')
+  service_port=$(echo "$service_json" | jq -r '.port.number // .port.name // 80')
+
+  # Update the first rule's path with Exact type (no URL rewrite)
+  updated_hr=$(echo "$hr_yaml" | yq eval ".spec.rules[0].matches[0].path.type = \"Exact\"")
+  updated_hr=$(echo "$updated_hr" | yq eval ".spec.rules[0].matches[0].path.value = \"$rule_path\"")
+
+  # Remove filters (no URL rewrite needed)
+  updated_hr=$(echo "$updated_hr" | yq eval "del(.spec.rules[0].filters)")
+
+  # Check if there's blue/green configuration
+  if [[ "$blue_green_config" != "null" && -n "$blue_green_config" ]]; then
+    # Parse blue/green destinations and weights
+    local blue_weight green_weight blue_service green_service
+
+    blue_weight=$(echo "$blue_green_config" | jq -r '.forward.targetGroups[0].weight // 100')
+    green_weight=$(echo "$blue_green_config" | jq -r '.forward.targetGroups[1].weight // 0')
+    blue_service=$(echo "$blue_green_config" | jq -r '.forward.targetGroups[0].serviceName')
+    green_service=$(echo "$blue_green_config" | jq -r '.forward.targetGroups[1].serviceName')
+
+    # Set blue backend
+    updated_hr=$(echo "$updated_hr" | yq eval ".spec.rules[0].backendRefs[0].name = \"${blue_service}\"")
+    updated_hr=$(echo "$updated_hr" | yq eval ".spec.rules[0].backendRefs[0].port = $service_port")
+    updated_hr=$(echo "$updated_hr" | yq eval ".spec.rules[0].backendRefs[0].weight = $blue_weight")
+
+    # Add green backend
+    updated_hr=$(echo "$updated_hr" | yq eval ".spec.rules[0].backendRefs += [{\"name\": \"${green_service}\", \"port\": $service_port, \"weight\": $green_weight}]")
+  else
+    # Single destination
+    updated_hr=$(echo "$updated_hr" | yq eval ".spec.rules[0].backendRefs[0].name = \"${service_name}\"")
+    updated_hr=$(echo "$updated_hr" | yq eval ".spec.rules[0].backendRefs[0].port = $service_port")
+    updated_hr=$(echo "$updated_hr" | yq eval "del(.spec.rules[0].backendRefs[0].weight)")
+  fi
+
+  echo "$updated_hr"
+}
+
+find_rule_index() {
+  local hr_yaml="$1"
+  local target_path="$2"
+  local target_method="${3:-}"
+
+  local num_rules
+  local i
+  local current_path
+  local current_method
+
+  num_rules=$(yq '.spec.rules | length' <<< "$hr_yaml")
+
+  for ((i=0; i<num_rules; i++)); do
+    current_path=$(yq ".spec.rules[$i].matches[0].path.value" <<< "$hr_yaml")
+    current_method=$(yq ".spec.rules[$i].matches[0].method" <<< "$hr_yaml")
+
+    # Remove quotes if present
+    current_path="${current_path//\"/}"
+    current_method="${current_method//\"/}"
+
+    # Handle null method (rule without method filter)
+    if [[ "$current_method" == "null" ]]; then
+      current_method=""
+    fi
+
+    # Match if path matches AND method matches (or both are empty/null)
+    if [[ "$current_path" == "$target_path" ]]; then
+      # If target method is empty/null, match only if current method is also empty/null
+      if [[ -z "$target_method" || "$target_method" == "null" ]]; then
+        if [[ -z "$current_method" || "$current_method" == "null" ]]; then
+          echo "$i"
+          return
+        fi
+      # If target method is specified, match only if current method matches
+      elif [[ "$current_method" == "$target_method" ]]; then
+        echo "$i"
+        return
+      fi
+    fi
+  done
+
+  echo "-1"  # Not found
+}
+
+replace_existing_rule() {
+  local hr_yaml="$1"
+  local rule_path="$2"
+  local service_json="$3"
+  local blue_green_config="$4"
+  local rule_index="$5"
+  local method="${6:-}"
+
+  local updated_hr
+  local new_rule
+
+  # Create the new rule
+  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method")
+
+  # Replace the existing rule at the found index
+  updated_hr=$(echo "$hr_yaml" | yq eval -o=json '.' | \
+    jq --argjson newrule "$new_rule" ".spec.rules[$rule_index] = \$newrule" | \
+    yq eval -P '.')
+
+  echo "$updated_hr" | yq .
+}
+
+add_new_rule() {
+  local hr_yaml="$1"
+  local rule_path="$2"
+  local service_json="$3"
+  local blue_green_config="$4"
+  local method="${5:-}"
+
+  local updated_hr
+  local new_rule
+
+  # Create the new http rule
+  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method")
+
+  # Add the new rule to the existing rules array
+  updated_hr=$(echo "$hr_yaml" | yq eval ".spec.rules += [$new_rule]")
+
+  echo "$updated_hr"
+}
+
+# Main script logic
+echo "=== Starting build_ingress_with_rule for Istio HTTPRoute ==="
+echo "K8S_NAMESPACE: $K8S_NAMESPACE"
+echo "SERVICE_ID: $SERVICE_ID"
+echo "SCOPE_ID: $SCOPE_ID"
+echo "RULE_PATH: $RULE_PATH"
+echo "METHOD: ${METHOD:-not specified}"
+
+# Check if HTTPROUTE_FILE is set (called from process_routes)
+if [[ -n "${HTTPROUTE_FILE:-}" && -f "$HTTPROUTE_FILE" ]]; then
+  echo "Reading HTTPRoute from file: $HTTPROUTE_FILE"
+  HTTPROUTE=$(cat "$HTTPROUTE_FILE")
+  HTTPROUTE_NAME=$(echo "$HTTPROUTE" | yq eval '.metadata.name' -)
+  echo "HTTPRoute name from file: $HTTPROUTE_NAME"
+else
+  # Fallback to reading from Kubernetes (for backward compatibility)
+  HTTPROUTE_NAME=$(kubectl get httproute -n "$K8S_NAMESPACE" -l "service_id=$SERVICE_ID" -o jsonpath="{.items[0].metadata.name}")
+  echo "Found HTTPRoute in cluster: $HTTPROUTE_NAME"
+  HTTPROUTE=$(kubectl get httproute -n "$K8S_NAMESPACE" "$HTTPROUTE_NAME" -o yaml)
+fi
+
+# Extract blue/green annotation and service from SCOPE_RULE
+echo ""
+echo "=== SCOPE_RULE content ==="
+echo "$SCOPE_RULE" | jq '.'
+
+BLUE_GREEN_CONFIG=$(echo "$SCOPE_RULE" | jq -r '.blue_green_annotation // "null"')
+echo ""
+echo "=== Blue/Green Configuration ==="
+echo "BLUE_GREEN_CONFIG: $BLUE_GREEN_CONFIG"
+
+SERVICE=$(echo "$SCOPE_RULE" | jq .service)
+echo ""
+echo "=== Service Configuration ==="
+echo "$SERVICE" | jq '.'
+
+# Define output file (only if not already set by process_routes)
+if [[ -z "${HTTPROUTE_FILE:-}" ]]; then
+  HTTPROUTE_FILE="$OUTPUT_DIR/httproute-$SERVICE_ID-$SCOPE_ID-public.yaml"
+fi
+
+# Create output directory if it doesn't exist
+mkdir -p "$OUTPUT_DIR"
+
+# Use case 1 - empty httproute
+echo ""
+echo "=== Checking if HTTPRoute is empty ==="
+IS_EMPTY=$(is_httproute_empty "$HTTPROUTE")
+echo "Is HTTPRoute empty? $IS_EMPTY"
+
+if [[ "$IS_EMPTY" == "true" ]]; then
+  echo "Case 1: Empty HTTPRoute - replacing fallback rule (index 0) with new rule"
+  UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "0" "${METHOD:-}")
+  echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
+else
+  # Detect the converted path value to match against existing rules
+  PATH_TYPE_VALUE=$(detect_path_type "$RULE_PATH")
+  CONVERTED_PATH="${PATH_TYPE_VALUE#*:}"
+
+  RULE_INDEX=$(find_rule_index "$HTTPROUTE" "$CONVERTED_PATH" "${METHOD:-}")
+  echo "Found rule index for path '$CONVERTED_PATH' with method '${METHOD:-none}': $RULE_INDEX"
+
+  # if there is a rule for the path we replace it
+  if [[ "$RULE_INDEX" != "-1" ]]; then
+    echo "Case 2: Replacing existing rule at index $RULE_INDEX"
+    UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "$RULE_INDEX" "${METHOD:-}")
+    echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
+  else
+    # if there is no rule for the path we add a new one
+    echo "Case 3: Adding new rule"
+    UPDATED_HR=$(add_new_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "${METHOD:-}")
+
+    # Debug: Check if hostnames and parentRefs are present before saving
+    echo "DEBUG: Checking HTTPRoute before saving..."
+    HOSTNAMES=$(echo "$UPDATED_HR" | yq eval '.spec.hostnames | length' -)
+    PARENTREFS=$(echo "$UPDATED_HR" | yq eval '.spec.parentRefs | length' -)
+    echo "DEBUG: Number of hostnames: $HOSTNAMES"
+    echo "DEBUG: Number of parentRefs: $PARENTREFS"
+
+    echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
+  fi
+fi
+
+echo ""
+echo "=== HTTPRoute configuration saved to: $HTTPROUTE_FILE ==="

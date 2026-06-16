@@ -1,0 +1,8 @@
+#!/bin/bash
+
+# Read Ingress: Retrieves ingress configuration from Kubernetes cluster.
+# Queries ingress resources by service_id label and outputs YAML configuration.
+
+INGRESS_NAME=$(kubectl get ingress -n "$K8S_NAMESPACE" -l "service_id=$SERVICE_ID" -o jsonpath="{.items[0].metadata.name}")
+
+kubectl get ingress -n "$K8S_NAMESPACE" "$INGRESS_NAME" -o yaml
