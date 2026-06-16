@@ -1,0 +1,115 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Load configuration
+source "$SERVICE_PATH/scripts/istio/config"
+
+# Parameters (must be set by caller)
+VISIBILITY="${VISIBILITY:-public}"  # "public" or "private"
+
+echo "=== Building ${VISIBILITY} HTTPRoute ==="
+
+# Save original ROUTES_JSON so manage_policies receives all routes after this step
+_ALL_ROUTES_JSON="$ROUTES_JSON"
+
+# Set variables based on visibility
+if [[ "$VISIBILITY" == "public" ]]; then
+  ROUTES_JSON="$PUBLIC_ROUTES_JSON"
+  GATEWAY_NAME="$PUBLIC_GATEWAY_NAME"
+  SUFFIX="public"
+elif [[ "$VISIBILITY" == "private" ]]; then
+  ROUTES_JSON="$PRIVATE_ROUTES_JSON"
+  GATEWAY_NAME="$PRIVATE_GATEWAY_NAME"
+  SUFFIX="private"
+else
+  echo "ERROR: Invalid VISIBILITY value: $VISIBILITY"
+  exit 1
+fi
+
+NUM_ROUTES=$(echo "$ROUTES_JSON" | jq 'length')
+echo "Number of $VISIBILITY routes: $NUM_ROUTES"
+
+# Derive unique hostnames from scope domains
+CREATE_EMPTY=false
+HOSTNAMES_JSON="[]"
+
+if [[ "$NUM_ROUTES" -eq 0 ]]; then
+  CREATE_EMPTY=true
+  echo "No $VISIBILITY routes configured, creating empty resource for cleanup..."
+else
+  SCOPES_JSON=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq '.results // []')
+
+  SCOPE_SLUGS=$(echo "$ROUTES_JSON" | jq -r '[.[].scope] | unique | .[]')
+  while IFS= read -r SCOPE_SLUG; do
+    SCOPE_ID=$(echo "$SCOPES_JSON" | jq -r --arg slug "$SCOPE_SLUG" '.[] | select(.slug == $slug) | .id')
+    [[ -z "$SCOPE_ID" || "$SCOPE_ID" == "null" ]] && continue
+    SCOPE_DOMAIN=$(np scope read --id "$SCOPE_ID" --format json | jq -r '.domain // ""')
+    [[ -z "$SCOPE_DOMAIN" || "$SCOPE_DOMAIN" == "null" ]] && continue
+    HOSTNAMES_JSON=$(echo "$HOSTNAMES_JSON" | jq --arg d "$SCOPE_DOMAIN" '. + [$d] | unique')
+  done <<< "$SCOPE_SLUGS"
+
+  if [[ "$(echo "$HOSTNAMES_JSON" | jq 'length')" -eq 0 ]]; then
+    CREATE_EMPTY=true
+    echo "No scope domains resolved for $VISIBILITY routes, creating empty resource for cleanup..."
+  else
+    echo "$VISIBILITY domains: $(echo "$HOSTNAMES_JSON" | jq -r '.[]' | tr '\n' ' ')"
+  fi
+fi
+
+# Create HTTPRoute
+HTTPROUTE_FILE="$OUTPUT_DIR/httproute-$SERVICE_ID-$SUFFIX.yaml"
+
+if [[ "$CREATE_EMPTY" == "true" ]]; then
+  echo "Skipping $VISIBILITY HTTPRoute generation - resource will be pruned if it exists"
+  touch "$OUTPUT_DIR/.httproute-$SUFFIX-deleted"
+else
+  TEMPLATE="$SERVICE_PATH/templates/istio/httproute.yaml.tpl"
+
+  HTTPROUTE_CONTEXT=$(jq -n \
+    --arg service_slug "$SERVICE_SLUG" \
+    --arg service_id "$SERVICE_ID" \
+    --arg k8s_namespace "$K8S_NAMESPACE" \
+    --argjson hostnames "$HOSTNAMES_JSON" \
+    --arg gateway_name "$GATEWAY_NAME" \
+    --arg gateway_namespace "$GATEWAY_NAMESPACE" \
+    --arg suffix "$SUFFIX" \
+    '{
+      service_slug: $service_slug,
+      service_id: $service_id,
+      k8s_namespace: $k8s_namespace,
+      hostnames: $hostnames,
+      gateway_name: $gateway_name,
+      gateway_namespace: $gateway_namespace,
+      suffix: $suffix
+    }')
+
+  CONTEXT_PATH="$OUTPUT_DIR/httproute-$SUFFIX-context-$SERVICE_ID.json"
+  echo "$HTTPROUTE_CONTEXT" > "$CONTEXT_PATH"
+
+  echo "Generating HTTPRoute from template: $TEMPLATE"
+  gomplate -c .="$CONTEXT_PATH" \
+    -f "$TEMPLATE" \
+    -o "$HTTPROUTE_FILE"
+
+  rm "$CONTEXT_PATH"
+
+  ORIGINAL_ROUTES_JSON="${ROUTES_JSON:-[]}"
+  export ROUTES_JSON="$ROUTES_JSON"
+  export HTTPROUTE_FILE="$HTTPROUTE_FILE"
+
+  source "$SERVICE_PATH/scripts/istio/process_routes"
+
+  export ROUTES_JSON="$ORIGINAL_ROUTES_JSON"
+
+  echo "✅ $VISIBILITY HTTPRoute created: $HTTPROUTE_FILE"
+fi
+
+# Restore ROUTES_JSON to all routes so subsequent steps (manage_policies) have full context
+export ROUTES_JSON="$_ALL_ROUTES_JSON"
+
+if [[ "$VISIBILITY" == "public" ]]; then
+  export HTTPROUTE_PUBLIC_FILE="$HTTPROUTE_FILE"
+elif [[ "$VISIBILITY" == "private" ]]; then
+  export HTTPROUTE_PRIVATE_FILE="$HTTPROUTE_FILE"
+fi

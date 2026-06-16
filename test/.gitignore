@@ -1,0 +1,11 @@
+# Test temporary files
+*.tmp
+*.log
+
+# BATS test outputs
+test-*.tap
+test-*.xml
+
+# Temporary directories created during tests
+tmp/
+temp/

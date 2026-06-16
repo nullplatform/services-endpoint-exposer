@@ -1,0 +1,83 @@
+{
+  "action": "service:action:update",
+  "id": "5b7636e1-304b-4ef9-92a9-2a0b102686f4",
+  "name": "update-api",
+  "slug": "update-api",
+  "status": "pending",
+  "created_at": "2026-01-12T19:50:09.357Z",
+  "updated_at": "2026-01-12T19:50:09.357Z",
+  "parameters": {
+    "routes": [
+      {
+        "visibility": "public",
+        "path": "/api/users",
+        "scope": "users:read",
+        "method": "GET"
+      },
+      {
+        "visibility": "public",
+        "path": "/api/users",
+        "scope": "users:write",
+        "method": "POST"
+      }
+    ],
+    "public_domain": "api.edenred.nullimplementation.com",
+    "authorization": {
+      "enabled": false
+    },
+    "private_domain": ""
+  },
+  "results": {},
+  "type": "update",
+  "specification": {
+    "id": "4c85dfb2-b489-4cd0-af0f-651f670ac32a",
+    "slug": "update-http-route-access-control"
+  },
+  "service": {
+    "id": "fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd",
+    "slug": "api",
+    "attributes": {
+      "routes": [
+        {
+          "visibility": "public",
+          "path": "/api/users",
+          "scope": "users:read",
+          "method": "GET"
+        },
+        {
+          "visibility": "public",
+          "path": "/api/users",
+          "scope": "users:write",
+          "method": "POST"
+        }
+      ],
+      "public_domain": "api.edenred.nullimplementation.com",
+      "authorization": {
+        "enabled": false
+      },
+      "private_domain": "api-private.edenred.nullimplementation.com"
+    },
+    "type": "dependency",
+    "specification": {
+      "id": "7e71962b-1282-4131-84ae-bf7687238c74",
+      "slug": "http-route-access-control"
+    },
+    "dimensions": {}
+  },
+  "link": null,
+  "user": {
+    "id": 1621446846,
+    "email": "javier.solis+edenred@nullplatform.io"
+  },
+  "tags": {
+    "organization_id": "1858797910",
+    "organization": "edenred",
+    "namespace_id": "1340017944",
+    "namespace": "playground",
+    "account_id": "758973013",
+    "account": "playground",
+    "application_id": "179976948",
+    "application": "floppy-bird-api"
+  },
+  "entity_nrn": "organization=1858797910:account=758973013:namespace=1340017944:application=179976948"
+}

@@ -1,0 +1,72 @@
+#!/bin/bash
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+echo "=== Cleaning up RequestAuthentication ==="
+
+if [[ -z "${COGNITO_USER_POOL_ARN:-}" || "$COGNITO_USER_POOL_ARN" == "null" || "$COGNITO_USER_POOL_ARN" == "" ]]; then
+  echo "No COGNITO_USER_POOL_ARN set, skipping RequestAuthentication cleanup"
+  exit 0
+fi
+
+REGION=$(echo "$COGNITO_USER_POOL_ARN" | cut -d':' -f4)
+POOL_ID=$(echo "$COGNITO_USER_POOL_ARN" | cut -d'/' -f2)
+ISSUER="https://cognito-idp.${REGION}.amazonaws.com/${POOL_ID}"
+
+echo "Issuer to remove: $ISSUER"
+
+# Check if other http-route-access-control services still have active AuthorizationPolicies
+# (excluding this service's own policies, which were already deleted)
+OTHER_ACTIVE_SERVICES=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" \
+  -l "nullplatform.com/managed-by=http-route-access-control" \
+  -o json 2>/dev/null | \
+  jq -r --arg sid "$SERVICE_ID" \
+  '[.items[] | select(.metadata.labels["nullplatform.com/service-id"] != $sid)] | length')
+
+if [[ "$OTHER_ACTIVE_SERVICES" -gt 0 ]]; then
+  echo "ℹ️  $OTHER_ACTIVE_SERVICES other service(s) still active — keeping RequestAuthentication"
+  exit 0
+fi
+
+echo "No other active services found — proceeding with issuer removal"
+
+for SUFFIX in public private; do
+  RA_NAME="cognito-jwt-${SUFFIX}"
+
+  EXISTING=$(kubectl get requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" -o json 2>/dev/null || echo "")
+  if [[ -z "$EXISTING" ]]; then
+    echo "$RA_NAME not found, skipping"
+    continue
+  fi
+
+  # Check if this issuer is actually in the RA
+  HAS_ISSUER=$(echo "$EXISTING" | jq -r --arg issuer "$ISSUER" \
+    '[.spec.jwtRules[].issuer] | contains([$issuer])')
+
+  if [[ "$HAS_ISSUER" != "true" ]]; then
+    echo "ℹ️  $RA_NAME does not contain issuer $ISSUER, skipping"
+    continue
+  fi
+
+  # Remove this issuer from jwtRules
+  REMAINING_RULES=$(echo "$EXISTING" | jq -c --arg issuer "$ISSUER" \
+    '[.spec.jwtRules[] | select(.issuer != $issuer)]')
+
+  REMAINING_COUNT=$(echo "$REMAINING_RULES" | jq 'length')
+
+  if [[ "$REMAINING_COUNT" -eq 0 ]]; then
+    # No other issuers → delete the whole RequestAuthentication
+    kubectl delete requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE"
+    echo "✅ Deleted $RA_NAME (no remaining issuers)"
+  else
+    # Other issuers remain → patch to remove only this one
+    kubectl patch requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" \
+      --type=json \
+      -p="$(echo "$REMAINING_RULES" | jq '[{op: "replace", path: "/spec/jwtRules", value: .}]')"
+    echo "✅ Removed issuer from $RA_NAME ($REMAINING_COUNT issuer(s) remaining)"
+  fi
+done
+
+echo "=== RequestAuthentication cleanup complete ==="

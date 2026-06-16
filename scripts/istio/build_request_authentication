@@ -1,0 +1,84 @@
+#!/bin/bash
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+echo "=== Building Cognito RequestAuthentication ==="
+
+if [[ -z "${COGNITO_USER_POOL_ARN:-}" || "$COGNITO_USER_POOL_ARN" == "null" || "$COGNITO_USER_POOL_ARN" == "" ]]; then
+  echo "No COGNITO_USER_POOL_ARN set, skipping RequestAuthentication generation"
+  exit 0
+fi
+
+# Derive issuer and jwks_uri from ARN
+# Format: arn:aws:cognito-idp:REGION:ACCOUNT:userpool/POOL_ID
+REGION=$(echo "$COGNITO_USER_POOL_ARN" | cut -d':' -f4)
+POOL_ID=$(echo "$COGNITO_USER_POOL_ARN" | cut -d'/' -f2)
+ISSUER="https://cognito-idp.${REGION}.amazonaws.com/${POOL_ID}"
+JWKS_URI="${ISSUER}/.well-known/jwks.json"
+
+echo "Pool ID: $POOL_ID"
+echo "Issuer:  $ISSUER"
+
+TEMPLATE="$SERVICE_PATH/templates/istio/request-authentication.yaml.tpl"
+
+for SUFFIX in public private; do
+  if [[ "$SUFFIX" == "public" ]]; then
+    GATEWAY_NAME="$PUBLIC_GATEWAY_NAME"
+  else
+    GATEWAY_NAME="$PRIVATE_GATEWAY_NAME"
+  fi
+
+  RA_NAME="cognito-jwt-${SUFFIX}"
+  OUTPUT_FILE="$OUTPUT_DIR/request-authentication-${SUFFIX}.yaml"
+
+  # Check if already exists in cluster
+  EXISTING=$(kubectl get requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" -o json 2>/dev/null || echo "")
+
+  if [[ -n "$EXISTING" ]]; then
+    # Check if this issuer is already present
+    ALREADY_HAS_ISSUER=$(echo "$EXISTING" | jq -r --arg issuer "$ISSUER" \
+      '[.spec.jwtRules[].issuer] | contains([$issuer])')
+
+    if [[ "$ALREADY_HAS_ISSUER" == "true" ]]; then
+      echo "ℹ️  cognito-jwt-${SUFFIX} already has issuer $ISSUER — skipping"
+      continue
+    fi
+
+    # Different issuer: merge new jwtRule into existing ones
+    echo "cognito-jwt-${SUFFIX} exists with different issuer — merging..."
+    MERGED_RULES=$(echo "$EXISTING" | jq \
+      --arg issuer "$ISSUER" \
+      --arg jwks_uri "$JWKS_URI" \
+      '.spec.jwtRules + [{issuer: $issuer, jwksUri: $jwks_uri}]')
+
+    # Patch the existing resource directly (no file needed for apply step)
+    kubectl patch requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" \
+      --type=json \
+      -p="$(echo "$MERGED_RULES" | jq '[{op: "replace", path: "/spec/jwtRules", value: .}]')"
+    echo "✅ Merged issuer into cognito-jwt-${SUFFIX}"
+    continue
+  fi
+
+  # Doesn't exist: generate file for apply step to create
+  CONTEXT_FILE="$OUTPUT_DIR/request-authentication-${SUFFIX}-ctx.json"
+  jq -n \
+    --arg suffix            "$SUFFIX" \
+    --arg gateway_name      "$GATEWAY_NAME" \
+    --arg gateway_namespace "$GATEWAY_NAMESPACE" \
+    --arg issuer            "$ISSUER" \
+    --arg jwks_uri          "$JWKS_URI" \
+    '{suffix: $suffix, gateway_name: $gateway_name, gateway_namespace: $gateway_namespace,
+      issuer: $issuer, jwks_uri: $jwks_uri}' \
+    > "$CONTEXT_FILE"
+
+  gomplate -c ".=$CONTEXT_FILE" \
+    -f "$TEMPLATE" \
+    -o "$OUTPUT_FILE"
+  rm "$CONTEXT_FILE"
+
+  echo "✅ RequestAuthentication generated: $RA_NAME (gateway: ${GATEWAY_NAME})"
+done
+
+echo "=== RequestAuthentication complete ==="

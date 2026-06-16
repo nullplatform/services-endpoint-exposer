@@ -1,0 +1,39 @@
+#!/bin/bash
+
+echo "Executing service action=$SERVICE_ACTION type=$SERVICE_ACTION_TYPE"
+
+ACTION_TO_EXECUTE="$SERVICE_ACTION_TYPE"
+
+case "$SERVICE_ACTION_TYPE" in
+  "custom")
+    ACTION_TO_EXECUTE="$SERVICE_ACTION"
+    ;;
+esac
+
+INGRESS_TYPE="${INGRESS_TYPE:-istio}"
+
+echo "INGRESS_TYPE is set to '$INGRESS_TYPE'"
+echo "OVERRIDES_PATH is set to '$OVERRIDES_PATH'"
+
+WORKFLOW_PATH="$SERVICE_PATH/workflows/$INGRESS_TYPE/$ACTION_TO_EXECUTE.yaml"
+OVERRIDES_WORKFLOW_PATH="$OVERRIDES_PATH/service/workflows/$ACTION_TO_EXECUTE.yaml"
+VALUES_PATH="$SERVICE_PATH/values.yaml"
+
+CMD="np service workflow exec --workflow $WORKFLOW_PATH --values $VALUES_PATH --build-context --include-secrets"
+
+if [[ -f "$OVERRIDES_WORKFLOW_PATH" ]]; then
+  CMD="$CMD --overrides $OVERRIDES_WORKFLOW_PATH"
+fi
+
+echo "Executing command: $CMD"
+
+# Note: The 'np service workflow exec' CLI automatically extracts OVERRIDES_PATH
+# It uses regex /[^/]+/workflows/[^/]+\.yaml$ to strip the /folder/workflows/file.yaml part
+# Example: --overrides /root/.np/plugin/service/workflows/create.yaml
+#   Regex matches: /service/workflows/create.yaml
+#   Results in: OVERRIDES_PATH=/root/.np/plugin (correct)
+# Workflow files should use: $OVERRIDES_PATH/scripts/... (no double nesting needed)
+# See: cli/cmd/service/workflow/exec/service_workflow_exec.go getOverridesBasePath()
+export OVERRIDES_PATH
+
+eval "$CMD"

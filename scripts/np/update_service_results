@@ -1,0 +1,48 @@
+#!/bin/bash
+
+set -euo pipefail
+
+CONTEXT="${CONTEXT:-${NP_ACTION_CONTEXT:-}}"
+AUTH_TYPE="${AUTH_TYPE:-aws-avp}"
+
+# Compute summary for each route: "METHOD1, METHOD2 | /path | group1, group2"
+ROUTES_WITH_SUMMARY=$(echo "${ROUTES_JSON:-[]}" | jq -c '
+  map(. + {
+    summary: (
+      (if (.methods | type) == "array" then .methods | join(", ")
+       else (.method // "GET")
+       end)
+      + " | " + .path
+      + (if (.groups // "" | length) > 0 then " | " + .groups else "" end)
+    )
+  })
+')
+
+if [[ "$AUTH_TYPE" == "aws-avp" ]]; then
+  AVP_POLICY_STORE_ARN="${AVP_POLICY_STORE_ARN:-}"
+  RESULTS=$(echo "$CONTEXT" | jq \
+    --arg avp_policy_store_arn "$AVP_POLICY_STORE_ARN" \
+    --argjson routes "$ROUTES_WITH_SUMMARY" \
+    '(.notification.parameters // .parameters // {}) + {
+      avp_policy_store_arn: $avp_policy_store_arn,
+      routes: $routes
+    }')
+
+  echo "Storing service results: avp_policy_store_arn=$AVP_POLICY_STORE_ARN"
+  np service action update --results "$RESULTS"
+
+  np service patch --id "$SERVICE_ID" \
+    --body "{\"attributes\": {\"avp_policy_store_arn\": \"$AVP_POLICY_STORE_ARN\", \"routes\": $ROUTES_WITH_SUMMARY}}"
+else
+  RESULTS=$(echo "$CONTEXT" | jq \
+    --argjson routes "$ROUTES_WITH_SUMMARY" \
+    '(.notification.parameters // .parameters // {}) + {routes: $routes}')
+
+  echo "Storing service results (aws-cognito)"
+  np service action update --results "$RESULTS"
+
+  np service patch --id "$SERVICE_ID" \
+    --body "{\"attributes\": {\"routes\": $ROUTES_WITH_SUMMARY}}"
+fi
+
+echo "✅ Service results stored"

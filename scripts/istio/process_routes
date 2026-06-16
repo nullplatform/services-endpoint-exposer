@@ -1,0 +1,115 @@
+#!/bin/bash
+
+set -euo pipefail
+
+echo "=== Starting process_routes script ==="
+echo "SERVICE_ID: $SERVICE_ID"
+echo "SERVICE_SLUG: $SERVICE_SLUG"
+echo "K8S_NAMESPACE: $K8S_NAMESPACE"
+echo "ROUTES_JSON: $ROUTES_JSON"
+
+NUM_ROUTES=$(echo "$ROUTES_JSON" | jq 'length')
+echo "Number of routes to process: $NUM_ROUTES"
+
+if [[ "$NUM_ROUTES" -eq 0 ]]; then
+  echo "No routes to process"
+  exit 0
+fi
+
+APPLICATION_ID=$(echo "$CONTEXT" | jq -r '.tags.application_id // empty')
+if [[ -n "$APPLICATION_ID" ]]; then
+  echo "Application ID: $APPLICATION_ID"
+else
+  echo "No Application ID found in context"
+  exit 1
+fi
+
+echo "Fetching scopes for application $APPLICATION_ID..."
+SCOPES_JSON=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq -rs ".[].results")
+echo "Scopes fetched successfully"
+
+echo ""
+echo "=== Sorting routes by specificity ==="
+SORTED_ROUTES=$(echo "$ROUTES_JSON" | jq 'sort_by(
+  if (.path | contains("*")) then 3
+  elif (.path | contains(":")) then 2
+  else 1
+  end
+)')
+ROUTES_JSON="$SORTED_ROUTES"
+echo "Routes sorted by specificity (Exact > RegularExpression > PathPrefix)"
+
+if [[ -z "${HTTPROUTE_FILE:-}" ]]; then
+  HTTPROUTE_FILE="$OUTPUT_DIR/httproute-$SERVICE_ID-public.yaml"
+fi
+
+HTTPROUTE_NAME="${SERVICE_SLUG}-${SERVICE_ID}-route"
+
+export HTTPROUTE_FILE
+echo "HTTPRoute file: $HTTPROUTE_FILE"
+echo "HTTPRoute name: $HTTPROUTE_NAME"
+
+if [[ ! -f "$HTTPROUTE_FILE" ]]; then
+  echo "ERROR: HTTPRoute file not found at $HTTPROUTE_FILE"
+  exit 1
+fi
+
+for ((i=0; i<NUM_ROUTES; i++)); do
+  echo ""
+  echo "=== Processing route $((i+1))/$NUM_ROUTES ==="
+
+  ROUTE=$(echo "$ROUTES_JSON" | jq ".[$i]")
+  ROUTE_PATH=$(echo "$ROUTE" | jq -r '.path')
+  SCOPE_SLUG=$(echo "$ROUTE" | jq -r '.scope')
+
+  # Support both .methods (array) and legacy .method (string)
+  RAW_METHODS=$(echo "$ROUTE" | jq -c '.methods // (.method // null)')
+  if echo "$RAW_METHODS" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    METHODS_JSON="$RAW_METHODS"
+  elif [[ -n "$RAW_METHODS" && "$RAW_METHODS" != "null" ]]; then
+    METHODS_JSON=$(echo "$RAW_METHODS" | jq -R '[.]')
+  else
+    METHODS_JSON='[]'
+  fi
+
+  echo "Methods: $METHODS_JSON"
+  echo "Path: $ROUTE_PATH"
+  echo "Scope: $SCOPE_SLUG"
+
+  # Look up scope by slug
+  SCOPE_ID=$(echo "$SCOPES_JSON" | jq -r ".[] | select(.slug == \"$SCOPE_SLUG\") | .id")
+
+  if [[ -z "$SCOPE_ID" || "$SCOPE_ID" == "null" ]]; then
+    echo "ERROR: Could not find scope with slug: $SCOPE_SLUG"
+    exit 1
+  fi
+
+  echo "Scope ID: $SCOPE_ID"
+
+  NUM_METHODS=$(echo "$METHODS_JSON" | jq 'length')
+
+  if [[ "$NUM_METHODS" -eq 0 ]]; then
+    echo "INFO: No methods specified, will match all HTTP methods"
+    export SCOPE_ID
+    export RULE_PATH="$ROUTE_PATH"
+    unset METHOD
+    source "$SERVICE_PATH/scripts/istio/build_rule"
+    source "$SERVICE_PATH/scripts/istio/build_ingress_with_rule"
+  else
+    for ((j=0; j<NUM_METHODS; j++)); do
+      METHOD=$(echo "$METHODS_JSON" | jq -r ".[$j]")
+      echo "Building rule for method $METHOD..."
+      export SCOPE_ID
+      export RULE_PATH="$ROUTE_PATH"
+      export METHOD
+      source "$SERVICE_PATH/scripts/istio/build_rule"
+      source "$SERVICE_PATH/scripts/istio/build_ingress_with_rule"
+    done
+  fi
+
+  echo "Route $((i+1)) processed successfully"
+done
+
+echo ""
+echo "=== All routes processed successfully ==="
+echo "HTTPRoute configuration saved to: $HTTPROUTE_FILE"

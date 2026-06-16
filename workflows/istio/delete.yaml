@@ -1,0 +1,32 @@
+steps:
+  - name: "find k8s namespace"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/fetch_provider_data"
+    output:
+      - name: K8S_NAMESPACE
+        type: environment
+  - name: "build context"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/build_context"
+    output:
+      - name: SERVICE_ID
+        type: environment
+      - name: SERVICE_SLUG
+        type: environment
+      - name: ACTION_ID
+        type: environment
+      - name: AUTH_TYPE
+        type: environment
+      - name: AVP_POLICY_STORE_ID
+        type: environment
+  - name: "manage policies"
+    type: script
+    file: "$SERVICE_PATH/scripts/common/manage_policies"
+    configuration:
+      ACTION: "delete"
+  - name: apply
+    type: script
+    file: "$SERVICE_PATH/scripts/common/apply"
+    configuration:
+      ACTION: delete
+      DRY_RUN: false

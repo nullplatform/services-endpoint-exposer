@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# Fetch Provider Data: Retrieves Kubernetes namespace from the container orchestration provider.
+# Queries provider data based on service dimensions and exports K8S_NAMESPACE for downstream scripts.
+
+NRN=$(echo "$CONTEXT" | jq -r .entity_nrn)
+
+DIMENSIONS=$(echo "$CONTEXT" | jq .service.dimensions)
+
+DIMENSION_FILTER=$(echo "$DIMENSIONS" | jq -r 'to_entries | map("\(.key):\(.value)") | join(",")')
+
+if [ -z "$DIMENSION_FILTER" ] || [ "$DIMENSION_FILTER" = "" ]; then
+  PROVIDER_DATA=$(np provider list --categories container-orchestration --nrn "$NRN" --format json | jq -r ".results[0]")
+else
+  PROVIDER_DATA=$(np provider list --categories container-orchestration --nrn "$NRN" --dimensions "$DIMENSION_FILTER" --format json | jq -r ".results[0]")
+fi
+
+# K8S_NAMESPACE=$(echo "$PROVIDER_DATA" | jq -r .attributes.cluster.namespace)
+
+export K8S_NAMESPACE

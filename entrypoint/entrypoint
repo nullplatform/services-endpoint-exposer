@@ -1,0 +1,66 @@
+#!/bin/bash
+
+# Check if NP_ACTION_CONTEXT is set
+if [ -z "$NP_ACTION_CONTEXT" ]; then
+  echo "NP_ACTION_CONTEXT is not set. Exiting."
+  exit 1
+fi
+
+CLEAN_CONTEXT=$(echo "$NP_ACTION_CONTEXT" | sed "s/^'//;s/'$//")
+
+export NP_ACTION_CONTEXT="$CLEAN_CONTEXT"
+
+# Parse the JSON properly - remove the extra quotes
+export CONTEXT=$(echo "$CLEAN_CONTEXT" | jq '.notification')
+export SERVICE_ACTION=$(echo "$CONTEXT" | jq -r '.slug')
+export SERVICE_ACTION_TYPE=$(echo "$CONTEXT" | jq -r '.type')
+export NOTIFICATION_ACTION=$(echo "$CONTEXT" | jq -r '.action')
+
+export LINK=$(echo "$CONTEXT" | jq '.link')
+
+ACTION_SOURCE=service
+
+IS_LINK_ACTION=$(echo "$CONTEXT" | jq '.link != null')
+
+if [ "$IS_LINK_ACTION" = "true" ]; then
+  ACTION_SOURCE=link
+fi
+
+export WORKING_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+SERVICE_PATH=""
+OVERRIDES_PATH=""
+
+for arg in "$@"; do
+  case $arg in
+    --service-path=*)
+      SERVICE_PATH="${arg#*=}"
+      ;;
+    --overrides-path=*)
+      OVERRIDES_PATH="${arg#*=}"
+      ;;
+    *)
+      echo "Unknown argument: $arg"
+      exit 1
+      ;;
+  esac
+done
+
+# Fall back to deriving SERVICE_PATH from the script's own location when the
+# caller doesn't pass --service-path. WORKING_DIRECTORY points at the
+# `entrypoint/` directory inside the service; the parent is the service root
+# (e.g. `/root/.np/nullplatform/services/endpoint-exposer`). Without this
+# fallback, every absolute path below becomes `/workflows/...` instead of
+# `<service-root>/workflows/...`, and the np CLI fails with
+# "failed to read workflow file: open /workflows/<type>/<action>.yaml".
+SERVICE_PATH="${SERVICE_PATH:-$(cd "$WORKING_DIRECTORY/.." && pwd)}"
+
+OVERRIDES_PATH="${OVERRIDES_PATH:-$SERVICE_PATH/overrides}"
+
+export SERVICE_PATH
+export OVERRIDES_PATH
+
+# export util functions
+#eval "$WORKING_DIRECTORY"/$ACTION_SOURCE
+
+np service-action exec --live-output --live-report --script="$WORKING_DIRECTORY/$ACTION_SOURCE"
