@@ -97,7 +97,7 @@
                                 "title": "Scope",
                                 "description": "Scope name where the rules apply.",
                                 "additionalKeywords": {
-                                    "enum": "[.scopes[]? | select(.visibility == \"public\" or .visibility == \"private\")] | map(.slug) | if length == 0 then [\"No scopes available for selected environment\"] else . end"
+                                    "enum": "(.visibility // \"public\") as $v | [.scopes[]? | select(.visibility == $v)] | map(.slug) | if length == 0 then [\"No scopes available for selected environment\"] else . end"
                                 }
                             },
                             "methods": {
