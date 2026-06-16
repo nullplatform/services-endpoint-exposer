@@ -49,7 +49,7 @@
                                             },
                                             {
                                                 "type": "Control",
-                                                "label": "Authorized Groups",
+                                                "label": "Authorized Groups *",
                                                 "scope": "#/properties/groups"
                                             }
                                         ]
@@ -83,6 +83,7 @@
                             "scope": {
                                 "type": "string",
                                 "title": "Scope",
+                                "description": "Scope name where the rules apply.",
                                 "additionalKeywords": {
                                     "enum": "[.scopes[]?.slug] | if length == 0 then [\"No scopes available for selected environment\"] else . end"
                                 }
@@ -106,10 +107,15 @@
                                 "minItems": 1
                             },
                             "groups": {
-                                "type": "string",
+                                "type": "array",
                                 "title": "Authorized Groups",
-                                "pattern": "^([a-zA-Z0-9-]+(\\s*,\\s*[a-zA-Z0-9-]+)*)?$",
-                                "description": "Comma-separated list of groups allowed to access this route (letters, numbers and hyphens only).",
+                                "description": "Groups allowed to access this route. Add each group name and press Add.",
+                                "items": {
+                                    "type": "string",
+                                    "pattern": "^[a-zA-Z0-9_-]+$"
+                                },
+                                "uniqueItems": true,
+                                "minItems": 1,
                                 "editableOn": [
                                     "create",
                                     "update"
