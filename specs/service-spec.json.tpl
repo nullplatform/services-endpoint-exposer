@@ -37,6 +37,11 @@
                                                 "elements": [
                                                     {
                                                         "type": "Control",
+                                                        "label": "Visibility",
+                                                        "scope": "#/properties/visibility"
+                                                    },
+                                                    {
+                                                        "type": "Control",
                                                         "label": "Path",
                                                         "scope": "#/properties/path"
                                                     },
@@ -49,7 +54,7 @@
                                             },
                                             {
                                                 "type": "Control",
-                                                "label": "Authorized Groups",
+                                                "label": "Authorized Groups *",
                                                 "scope": "#/properties/groups"
                                             }
                                         ]
@@ -69,11 +74,18 @@
                         "type": "object",
                         "required": [
                             "methods",
+                            "visibility",
                             "path",
                             "scope",
                             "groups"
                         ],
                         "properties": {
+                            "visibility": {
+                                "type": "string",
+                                "title": "Visibility",
+                                "enum": ["public", "private"],
+                                "description": "Determines whether this route is exposed through the public or private gateway."
+                            },
                             "path": {
                                 "type": "string",
                                 "title": "Path",
@@ -83,8 +95,9 @@
                             "scope": {
                                 "type": "string",
                                 "title": "Scope",
+                                "description": "Scope name where the rules apply.",
                                 "additionalKeywords": {
-                                    "enum": "[.scopes[]?.slug] | if length == 0 then [\"No scopes available for selected environment\"] else . end"
+                                    "enum": "[.scopes[]? | select(.visibility == \"public\" or .visibility == \"private\")] | map(.slug) | if length == 0 then [\"No scopes available for selected environment\"] else . end"
                                 }
                             },
                             "methods": {
@@ -106,10 +119,15 @@
                                 "minItems": 1
                             },
                             "groups": {
-                                "type": "string",
+                                "type": "array",
                                 "title": "Authorized Groups",
-                                "pattern": "^([a-zA-Z0-9-]+(\\s*,\\s*[a-zA-Z0-9-]+)*)?$",
-                                "description": "Comma-separated list of groups allowed to access this route (letters, numbers and hyphens only).",
+                                "description": "Groups allowed to access this route. Add each group name and press Add.",
+                                "items": {
+                                    "type": "string",
+                                    "pattern": "^[a-zA-Z0-9_-]+$"
+                                },
+                                "uniqueItems": true,
+                                "minItems": 1,
                                 "editableOn": [
                                     "create",
                                     "update"

@@ -13,7 +13,10 @@ ROUTES_WITH_SUMMARY=$(echo "${ROUTES_JSON:-[]}" | jq -c '
        else (.method // "GET")
        end)
       + " | " + .path
-      + (if (.groups // "" | length) > 0 then " | " + .groups else "" end)
+      + (
+          (.groups | if type == "array" then join(", ") else (. // "") end) |
+          if length > 0 then " | " + . else "" end
+        )
     )
   })
 ')
