@@ -126,6 +126,29 @@ module "agent" {
 }
 ```
 
+### 3. Register the scope notification channel for blue/green sync
+
+The `container-scope-override/` directory injects a `sync_exposer` step into scope deploy workflows (initial, blue_green, switch_traffic, finalize, rollback, delete). This keeps HTTPRoutes in sync when the underlying Kubernetes service names change during a blue/green deploy.
+
+This mechanism only activates when the scope agent entrypoint receives `--overrides-path=` pointing to the override directory. That flag must be set in a **separate scope notification channel** — it cannot come from the service channel above.
+
+```hcl
+module "endpoint_exposer_scope_channel" {
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/scope_definition_agent_association?ref=<version>"
+
+  nrn                      = var.nrn
+  api_key                  = var.np_api_key
+  tags_selectors           = { "owner" = "my-agent", "environment" = "{$context.service.dimensions.environment}" }
+  scope_specification_id   = var.scope_specification_id   # ID of the scope spec used by apps that expose routes through this service
+  scope_specification_slug = var.scope_specification_slug
+  enabled_override         = true
+  override_repo_path       = "/root/.np/nullplatform/services-endpoint-exposer"
+  overrides_service_path   = "/container-scope-override"
+}
+```
+
+Without this channel, HTTPRoutes will point to stale backend service names after a blue/green deploy and traffic will break.
+
 ---
 
 ## How auth resolution works
