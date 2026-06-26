@@ -17,7 +17,7 @@
                 "elements": [
                     {
                         "type": "Group",
-                        "label": "Routes",
+                        "label": "Routes *",
                         "elements": [
                             {
                                 "type": "Control",
@@ -49,7 +49,7 @@
                                             },
                                             {
                                                 "type": "Control",
-                                                "label": "Authorized Groups *",
+                                                "label": "Authorized Groups",
                                                 "scope": "#/properties/groups"
                                             }
                                         ]
