@@ -6,7 +6,7 @@ output/
 *.tfstate
 *.tfstate.backup
 *.tfstate.*.backup
-install/tofu/terraform.tfvars
+**/terraform.tfvars
 
 # IDE
 .idea/
