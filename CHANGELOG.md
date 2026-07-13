@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.2.0...v0.2.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **istio:** allow reading Cognito JWT from a cookie ([2fb7f11](https://github.com/nullplatform/services-endpoint-exposer/commit/2fb7f119663ba0c1fd2c0ffb367112c9db4af91f))
+
 ## [0.2.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.1.0...v0.2.0) (2026-07-08)
 
 
