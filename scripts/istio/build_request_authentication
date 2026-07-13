@@ -51,7 +51,11 @@ for SUFFIX in public private; do
     MERGED_RULES=$(echo "$EXISTING" | jq \
       --arg issuer "$ISSUER" \
       --arg jwks_uri "$JWKS_URI" \
-      '.spec.jwtRules + [{issuer: $issuer, jwksUri: $jwks_uri}]')
+      --arg cookie_name "${COGNITO_TOKEN_COOKIE_NAME:-}" \
+      '.spec.jwtRules + [
+        {issuer: $issuer, jwksUri: $jwks_uri}
+        + (if $cookie_name != "" then {fromCookies: [$cookie_name]} else {} end)
+      ]')
 
     # Patch the existing resource directly (no file needed for apply step)
     kubectl patch requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" \
@@ -69,8 +73,9 @@ for SUFFIX in public private; do
     --arg gateway_namespace "$GATEWAY_NAMESPACE" \
     --arg issuer            "$ISSUER" \
     --arg jwks_uri          "$JWKS_URI" \
+    --arg cookie_name       "${COGNITO_TOKEN_COOKIE_NAME:-}" \
     '{suffix: $suffix, gateway_name: $gateway_name, gateway_namespace: $gateway_namespace,
-      issuer: $issuer, jwks_uri: $jwks_uri}' \
+      issuer: $issuer, jwks_uri: $jwks_uri, cookie_name: $cookie_name}' \
     > "$CONTEXT_FILE"
 
   gomplate -c ".=$CONTEXT_FILE" \

@@ -12,3 +12,7 @@ spec:
   jwtRules:
     - issuer: {{ .issuer }}
       jwksUri: {{ .jwks_uri }}
+{{- if .cookie_name }}
+      fromCookies:
+        - "{{ .cookie_name }}"
+{{- end }}

@@ -11,3 +11,8 @@ export GATEWAY_NAMESPACE="${GATEWAY_NAMESPACE:-gateways}"
 
 # OPA configuration
 export OPA_PROVIDER_NAME="${OPA_PROVIDER_NAME:-}"
+
+# Cognito configuration
+# When set, Istio extracts the JWT from this cookie name instead of relying on
+# the default Authorization header / access_token query param.
+export COGNITO_TOKEN_COOKIE_NAME="${COGNITO_TOKEN_COOKIE_NAME:-}"
