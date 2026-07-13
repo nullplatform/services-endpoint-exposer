@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.1.0...v0.2.0) (2026-07-08)
+
+
+### Features
+
+* **tofu:** add install and requirements/aws OpenTofu modules ([dfcf6ff](https://github.com/nullplatform/services-endpoint-exposer/commit/dfcf6ff4d9f1f3dc9fe1e8f70eff0b9331202807))
+
 ## [0.1.0](https://github.com/nullplatform/services-endpoint-exposer/compare/0.0.1...v0.1.0) (2026-07-06)
 
 
