@@ -81,6 +81,16 @@ One variable per nullplatform environment dimension value (uppercased):
 
 `<ENV>` corresponds to `service.dimensions.environment` uppercased (e.g. `dev` → `DEV`, `production` → `PRODUCTION`).
 
+##### Reading the JWT from a cookie instead of a header
+
+By default, Istio only looks for the Cognito JWT in the `Authorization: Bearer <token>` header (or an `access_token` query param). If the frontend instead sends the token as a cookie (e.g. `id_token`), set:
+
+| Variable | Description | Example |
+|---|---|---|
+| `COGNITO_TOKEN_COOKIE_NAME` | Name of the cookie holding the Cognito `id_token`. When unset, falls back to the default header/query-param extraction. | `COGNITO_TOKEN_COOKIE_NAME=id_token` |
+
+This is global (applies to every environment's `RequestAuthentication`), not per-environment. Only the JWT itself (Cognito's `id_token`) can be validated this way — the `refresh_token` is an opaque token, not a JWT, and isn't usable here.
+
 #### Required per environment — `aws-avp`
 
 | Variable | Description | Example |
