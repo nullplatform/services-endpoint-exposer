@@ -17,8 +17,11 @@ spec:
             hosts: ["{{ .host }}"]
             paths: ["{{ .path }}"]
             methods: ["{{ .method }}"]
+{{- if gt (len .groups) 0 }}
       when:
         - key: "request.auth.claims[cognito:groups]"
           values:
-{{ range .groups }}          - "{{ . }}"
-{{ end }}
+{{- range .groups }}
+          - "{{ . }}"
+{{- end }}
+{{- end }}

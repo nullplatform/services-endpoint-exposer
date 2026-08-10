@@ -2,6 +2,19 @@
 
 set -euo pipefail
 
+# Under `np service workflow exec --build-context` (how entrypoint/service runs
+# this workflow), the CLI sets $CONTEXT to the NRN resolution hierarchy
+# ({account, application, namespace}) for each step script. That object has none
+# of the notification fields read below (.service, .parameters, .dimensions), so
+# every read resolved to null and create aborted with
+# "service.dimensions.environment is required" / "jq: null has no keys".
+# The notification payload is in $NP_ACTION_CONTEXT (exported by entrypoint/entrypoint,
+# wrapped as {"notification": {...}}, sometimes single-quoted). Re-point CONTEXT at
+# the notification body so the existing reads resolve. Falls back to $CONTEXT when
+# NP_ACTION_CONTEXT is unset (e.g. tests), and to the whole object when it is not
+# wrapped under .notification.
+CONTEXT=$(echo "${NP_ACTION_CONTEXT:-$CONTEXT}" | sed "s/^'//;s/'$//" | jq -c '.notification // .')
+
 SERVICE_ID=$(echo "$CONTEXT" | jq -r .service.id)
 SERVICE_SLUG=$(echo "$CONTEXT" | jq -r .service.slug)
 
