@@ -3,9 +3,16 @@
 # Fetch Provider Data: Retrieves Kubernetes namespace from the container orchestration provider.
 # Queries provider data based on service dimensions and exports K8S_NAMESPACE for downstream scripts.
 
+# Under `np service workflow exec --build-context`, $CONTEXT is the NRN hierarchy
+# ({account, application, namespace}) and lacks .entity_nrn / .service.dimensions.
+# The notification body (in $NP_ACTION_CONTEXT) has them; re-point CONTEXT at it so
+# the reads below resolve. Without this, `.service.dimensions` was null and the
+# `to_entries` on line below aborted with "null (null) has no keys".
+CONTEXT=$(echo "${NP_ACTION_CONTEXT:-$CONTEXT}" | sed "s/^'//;s/'$//" | jq -c '.notification // .')
+
 NRN=$(echo "$CONTEXT" | jq -r .entity_nrn)
 
-DIMENSIONS=$(echo "$CONTEXT" | jq .service.dimensions)
+DIMENSIONS=$(echo "$CONTEXT" | jq '.service.dimensions // {}')
 
 DIMENSION_FILTER=$(echo "$DIMENSIONS" | jq -r 'to_entries | map("\(.key):\(.value)") | join(",")')
 
