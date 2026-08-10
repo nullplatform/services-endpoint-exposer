@@ -62,15 +62,12 @@ for ((i=0; i<NUM_ROUTES; i++)); do
   ROUTE_PATH=$(echo "$ROUTE" | jq -r '.path')
   SCOPE_SLUG=$(echo "$ROUTE" | jq -r '.scope')
 
-  # Support both .methods (array) and legacy .method (string)
-  RAW_METHODS=$(echo "$ROUTE" | jq -c '.methods // (.method // null)')
-  if echo "$RAW_METHODS" | jq -e 'type == "array"' >/dev/null 2>&1; then
-    METHODS_JSON="$RAW_METHODS"
-  elif [[ -n "$RAW_METHODS" && "$RAW_METHODS" != "null" ]]; then
-    METHODS_JSON=$(echo "$RAW_METHODS" | jq -R '[.]')
-  else
-    METHODS_JSON='[]'
-  fi
+  # Support both .methods (array) and legacy .method (string). Normalize a legacy
+  # string .method into an array inside jq so it stays valid JSON: the previous
+  # `jq -R '[.]'` re-read the already-JSON-encoded string ("GET") as raw text and
+  # produced ["\"GET\""], which rendered as `method: '"GET"'` and made the
+  # HTTPRoute invalid ("Invalid value: null").
+  METHODS_JSON=$(echo "$ROUTE" | jq -c '.methods // (if .method then [.method] else [] end)')
 
   echo "Methods: $METHODS_JSON"
   echo "Path: $ROUTE_PATH"
