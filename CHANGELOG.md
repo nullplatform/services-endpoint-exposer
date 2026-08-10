@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.2.2...v0.2.3) (2026-08-10)
+
+
+### Bug Fixes
+
+* **istio:** read context from NP_ACTION_CONTEXT in fetch_provider_data ([#13](https://github.com/nullplatform/services-endpoint-exposer/issues/13)) ([2657ddf](https://github.com/nullplatform/services-endpoint-exposer/commit/2657ddf3c938555e880367a1684df33b457eb6ee))
+
 ## [0.2.2](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.2.1...v0.2.2) (2026-08-10)
 
 
