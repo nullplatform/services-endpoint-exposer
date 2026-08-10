@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.2](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.2.1...v0.2.2) (2026-08-10)
+
+
+### Bug Fixes
+
+* **istio:** normalize legacy string .method so the HTTPRoute is valid ([ab03ac7](https://github.com/nullplatform/services-endpoint-exposer/commit/ab03ac747abd122311d4f1fe0c94962c35befb51))
+* **istio:** normalize legacy string `.method` so the HTTPRoute is valid ([e7e86c6](https://github.com/nullplatform/services-endpoint-exposer/commit/e7e86c6fbb93a73609a4cf4ae417e72b2ab196d0))
+* **istio:** read context from NP_ACTION_CONTEXT + omit empty claim `when` ([#13](https://github.com/nullplatform/services-endpoint-exposer/issues/13)) ([0c1346b](https://github.com/nullplatform/services-endpoint-exposer/commit/0c1346bc3a84371594c918cc5a23cc3e611e4cd2))
+* **istio:** read notification context from NP_ACTION_CONTEXT; omit empty claim when ([f6f205f](https://github.com/nullplatform/services-endpoint-exposer/commit/f6f205f2df1e8d84b3d641e6e17d97a69dac4e4d))
+
 ## [0.2.1](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.2.0...v0.2.1) (2026-07-13)
 
 
