@@ -132,6 +132,23 @@ build_filters() {
   fi
 }
 
+# Add a weighted backend to an existing rule instead of replacing it. Used when
+# two routes declare the same path and method against different scopes: Gateway
+# API expresses that as one rule with several weighted backendRefs, not as two
+# competing rules.
+merge_weighted_backend() {
+  local rule_json="$1"
+  local service_name="$2"
+  local service_port="$3"
+  local weight="$4"
+
+  echo "$rule_json" | jq \
+    --arg name "$service_name" \
+    --argjson port "$service_port" \
+    --argjson weight "$weight" \
+    '.backendRefs = ((.backendRefs // []) | map(select(.name != $name)) + [{name: $name, port: $port, weight: $weight}])'
+}
+
 create_http_rule() {
   local rule_path="$1"
   local service_json="$2"
@@ -139,6 +156,7 @@ create_http_rule() {
   local method="${4:-}"
   local headers_json="${5:-}"
   local filters_json="${6:-}"
+  local weight="${7:-}"
 
   local service_name
   local service_port
@@ -212,18 +230,19 @@ create_http_rule() {
         ]
       }')
   else
-    # Single destination without blue/green
+    # Single destination without blue/green. A declared weight is attached to
+    # this backendRef so that a sibling route sharing path+method can later
+    # merge_weighted_backend its own backend into this same rule.
     rule_json=$(jq -n \
       --argjson matches "$matches_json" \
       --arg service_name "$service_name" \
       --arg service_port "$service_port" \
+      --argjson weight "${weight:-null}" \
       '{
         matches: $matches,
         backendRefs: [
-          {
-            name: $service_name,
-            port: ($service_port | tonumber)
-          }
+          ({name: $service_name, port: ($service_port | tonumber)}
+           + (if $weight == null then {} else {weight: $weight} end))
         ]
       }')
   fi
@@ -346,12 +365,13 @@ replace_existing_rule() {
   local method="${6:-}"
   local headers_json="${7:-}"
   local filters_json="${8:-}"
+  local weight="${9:-}"
 
   local updated_hr
   local new_rule
 
   # Create the new rule
-  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method" "$headers_json" "$filters_json")
+  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method" "$headers_json" "$filters_json" "$weight")
 
   # Replace the existing rule at the found index
   updated_hr=$(echo "$hr_yaml" | yq eval -o=json '.' | \
@@ -369,12 +389,13 @@ add_new_rule() {
   local method="${5:-}"
   local headers_json="${6:-}"
   local filters_json="${7:-}"
+  local weight="${8:-}"
 
   local updated_hr
   local new_rule
 
   # Create the new http rule
-  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method" "$headers_json" "$filters_json")
+  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method" "$headers_json" "$filters_json" "$weight")
 
   # Add the new rule to the existing rules array
   updated_hr=$(echo "$hr_yaml" | yq eval ".spec.rules += [$new_rule]")
@@ -434,7 +455,7 @@ echo "Is HTTPRoute empty? $IS_EMPTY"
 
 if [[ "$IS_EMPTY" == "true" ]]; then
   echo "Case 1: Empty HTTPRoute - replacing fallback rule (index 0) with new rule"
-  UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "0" "${METHOD:-}" "${HEADERS_JSON:-}" "${FILTERS_JSON:-}")
+  UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "0" "${METHOD:-}" "${HEADERS_JSON:-}" "${FILTERS_JSON:-}" "${ROUTE_WEIGHT:-}")
   echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
 else
   # Detect the converted path value to match against existing rules
@@ -446,13 +467,30 @@ else
 
   # if there is a rule for the path we replace it
   if [[ "$RULE_INDEX" != "-1" ]]; then
-    echo "Case 2: Replacing existing rule at index $RULE_INDEX"
-    UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "$RULE_INDEX" "${METHOD:-}" "${HEADERS_JSON:-}" "${FILTERS_JSON:-}")
-    echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
+    if [[ -n "${ROUTE_WEIGHT:-}" && "$BLUE_GREEN_CONFIG" == "null" ]]; then
+      # Same path+method already has a rule (from a sibling route on another
+      # scope) and no deployment is in progress: add this scope's backend to
+      # it instead of overwriting the rule, so both weights coexist.
+      echo "Case 2b: Merging weighted backend into rule at index $RULE_INDEX"
+      EXISTING_RULE=$(echo "$HTTPROUTE" | yq eval -o=json '.' | jq -c ".spec.rules[$RULE_INDEX]")
+      SERVICE_NAME=$(echo "$SERVICE" | jq -r '.name')
+      SERVICE_PORT=$(echo "$SERVICE" | jq -r '.port.number // 80')
+      MERGED_RULE=$(merge_weighted_backend "$EXISTING_RULE" "$SERVICE_NAME" "$SERVICE_PORT" "$ROUTE_WEIGHT")
+      UPDATED_HR=$(echo "$HTTPROUTE" | yq eval -o=json '.' | \
+        jq --argjson newrule "$MERGED_RULE" ".spec.rules[$RULE_INDEX] = \$newrule" | yq eval -P '.')
+      echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
+    else
+      if [[ -n "${ROUTE_WEIGHT:-}" ]]; then
+        echo "INFO: blue/green deployment in progress, ignoring declared weight $ROUTE_WEIGHT"
+      fi
+      echo "Case 2: Replacing existing rule at index $RULE_INDEX"
+      UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "$RULE_INDEX" "${METHOD:-}" "${HEADERS_JSON:-}" "${FILTERS_JSON:-}" "${ROUTE_WEIGHT:-}")
+      echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
+    fi
   else
     # if there is no rule for the path we add a new one
     echo "Case 3: Adding new rule"
-    UPDATED_HR=$(add_new_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "${METHOD:-}" "${HEADERS_JSON:-}" "${FILTERS_JSON:-}")
+    UPDATED_HR=$(add_new_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "${METHOD:-}" "${HEADERS_JSON:-}" "${FILTERS_JSON:-}" "${ROUTE_WEIGHT:-}")
 
     # Debug: Check if hostnames and parentRefs are present before saving
     echo "DEBUG: Checking HTTPRoute before saving..."

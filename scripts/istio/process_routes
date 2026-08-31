@@ -87,6 +87,9 @@ for ((i=0; i<NUM_ROUTES; i++)); do
     "$(echo "$ROUTE" | jq -c '.requestHeaders // {}')")
   export FILTERS_JSON
 
+  ROUTE_WEIGHT=$(echo "$ROUTE" | jq -r '.weight // empty')
+  export ROUTE_WEIGHT
+
   echo "Methods: $METHODS_JSON"
   echo "Path: $ROUTE_PATH"
   echo "Scope: $SCOPE_SLUG"

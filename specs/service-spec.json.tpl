@@ -44,6 +44,11 @@
                                                         "type": "Control",
                                                         "label": "Scope",
                                                         "scope": "#/properties/scope"
+                                                    },
+                                                    {
+                                                        "type": "Control",
+                                                        "label": "Weight",
+                                                        "scope": "#/properties/weight"
                                                     }
                                                 ]
                                             },
@@ -101,6 +106,17 @@
                                 "additionalKeywords": {
                                     "enum": "[.scopes[]?.slug] | if length == 0 then [\"No scopes available for selected environment\"] else . end"
                                 }
+                            },
+                            "weight": {
+                                "type": "integer",
+                                "title": "Weight",
+                                "description": "Share of traffic for this scope when several routes declare the same path and method. Ignored while a blue/green deployment is in progress.",
+                                "minimum": 0,
+                                "maximum": 100,
+                                "editableOn": [
+                                    "create",
+                                    "update"
+                                ]
                             },
                             "methods": {
                                 "type": "array",
