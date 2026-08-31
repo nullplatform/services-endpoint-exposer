@@ -51,6 +51,11 @@
                                                 "type": "Control",
                                                 "label": "Authorized Groups",
                                                 "scope": "#/properties/groups"
+                                            },
+                                            {
+                                                "type": "Control",
+                                                "label": "Header matches",
+                                                "scope": "#/properties/headers"
                                             }
                                         ]
                                     },
@@ -114,6 +119,42 @@
                                     "pattern": "^[a-zA-Z0-9_-]+$"
                                 },
                                 "uniqueItems": true,
+                                "editableOn": [
+                                    "create",
+                                    "update"
+                                ]
+                            },
+                            "headers": {
+                                "type": "array",
+                                "title": "Header matches",
+                                "description": "The route only matches when every header listed here matches the request.",
+                                "items": {
+                                    "type": "object",
+                                    "required": [
+                                        "name",
+                                        "value"
+                                    ],
+                                    "properties": {
+                                        "name": {
+                                            "type": "string",
+                                            "title": "Header",
+                                            "pattern": "^[A-Za-z0-9!#$%&'*+.^_`|~-]+$"
+                                        },
+                                        "value": {
+                                            "type": "string",
+                                            "title": "Value"
+                                        },
+                                        "type": {
+                                            "type": "string",
+                                            "title": "Match type",
+                                            "enum": [
+                                                "Exact",
+                                                "RegularExpression"
+                                            ],
+                                            "default": "Exact"
+                                        }
+                                    }
+                                },
                                 "editableOn": [
                                     "create",
                                     "update"

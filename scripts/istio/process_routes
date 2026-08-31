@@ -69,6 +69,9 @@ for ((i=0; i<NUM_ROUTES; i++)); do
   # HTTPRoute invalid ("Invalid value: null").
   METHODS_JSON=$(echo "$ROUTE" | jq -c '.methods // (if .method then [.method] else [] end)')
 
+  HEADERS_JSON=$(echo "$ROUTE" | jq -c '.headers // []')
+  export HEADERS_JSON
+
   echo "Methods: $METHODS_JSON"
   echo "Path: $ROUTE_PATH"
   echo "Scope: $SCOPE_SLUG"

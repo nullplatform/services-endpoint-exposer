@@ -93,6 +93,7 @@ create_http_rule() {
   local service_json="$2"
   local blue_green_config="$3"
   local method="${4:-}"
+  local headers_json="${5:-}"
 
   local service_name
   local service_port
@@ -108,32 +109,26 @@ create_http_rule() {
 
   echo "DEBUG: Original path='$rule_path', Detected type='$path_type', Converted value='$path_value'" >&2
 
-  # Build matches array with path and optional method
+  # Build one match with path, optional method and optional header matches.
+  # Gateway API ANDs every field inside a single match, which is the semantics
+  # we want: the route applies only when path, method and all headers match.
   local matches_json
+  matches_json=$(jq -n \
+    --arg path "$path_value" \
+    --arg path_type "$path_type" \
+    '[{path: {type: $path_type, value: $path}}]')
 
-  # Add method if specified
   if [[ -n "$method" && "$method" != "null" ]]; then
-    matches_json=$(jq -n \
-      --arg path "$path_value" \
-      --arg path_type "$path_type" \
-      --arg method "$method" \
-      '[{
-        path: {
-          type: $path_type,
-          value: $path
-        },
-        method: $method
-      }]')
-  else
-    matches_json=$(jq -n \
-      --arg path "$path_value" \
-      --arg path_type "$path_type" \
-      '[{
-        path: {
-          type: $path_type,
-          value: $path
-        }
-      }]')
+    matches_json=$(echo "$matches_json" | jq --arg method "$method" '.[0].method = $method')
+  fi
+
+  if [[ -n "$headers_json" && "$headers_json" != "null" && "$headers_json" != "[]" ]]; then
+    matches_json=$(echo "$matches_json" | jq --argjson headers "$headers_json" \
+      '.[0].headers = ($headers | map({
+         name: .name,
+         value: .value,
+         type: (.type // "Exact")
+       }))')
   fi
 
   # Check if there's blue/green configuration
@@ -285,12 +280,13 @@ replace_existing_rule() {
   local blue_green_config="$4"
   local rule_index="$5"
   local method="${6:-}"
+  local headers_json="${7:-}"
 
   local updated_hr
   local new_rule
 
   # Create the new rule
-  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method")
+  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method" "$headers_json")
 
   # Replace the existing rule at the found index
   updated_hr=$(echo "$hr_yaml" | yq eval -o=json '.' | \
@@ -306,12 +302,13 @@ add_new_rule() {
   local service_json="$3"
   local blue_green_config="$4"
   local method="${5:-}"
+  local headers_json="${6:-}"
 
   local updated_hr
   local new_rule
 
   # Create the new http rule
-  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method")
+  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method" "$headers_json")
 
   # Add the new rule to the existing rules array
   updated_hr=$(echo "$hr_yaml" | yq eval ".spec.rules += [$new_rule]")
@@ -371,7 +368,7 @@ echo "Is HTTPRoute empty? $IS_EMPTY"
 
 if [[ "$IS_EMPTY" == "true" ]]; then
   echo "Case 1: Empty HTTPRoute - replacing fallback rule (index 0) with new rule"
-  UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "0" "${METHOD:-}")
+  UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "0" "${METHOD:-}" "${HEADERS_JSON:-}")
   echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
 else
   # Detect the converted path value to match against existing rules
@@ -384,12 +381,12 @@ else
   # if there is a rule for the path we replace it
   if [[ "$RULE_INDEX" != "-1" ]]; then
     echo "Case 2: Replacing existing rule at index $RULE_INDEX"
-    UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "$RULE_INDEX" "${METHOD:-}")
+    UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "$RULE_INDEX" "${METHOD:-}" "${HEADERS_JSON:-}")
     echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
   else
     # if there is no rule for the path we add a new one
     echo "Case 3: Adding new rule"
-    UPDATED_HR=$(add_new_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "${METHOD:-}")
+    UPDATED_HR=$(add_new_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "${METHOD:-}" "${HEADERS_JSON:-}")
 
     # Debug: Check if hostnames and parentRefs are present before saving
     echo "DEBUG: Checking HTTPRoute before saving..."
