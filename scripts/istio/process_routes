@@ -54,6 +54,16 @@ if [[ ! -f "$HTTPROUTE_FILE" ]]; then
   exit 1
 fi
 
+# build_filters lives in build_ingress_with_rule, which the loop below sources
+# in full (its "Main script logic" included) once per route/method. We need
+# build_filters earlier than that, to compute FILTERS_JSON per route before
+# that sourcing happens, so pull in just its function definitions now - same
+# technique the test suite uses (see source_build_ingress_functions in
+# test/test_traffic_management.bats). The full script is still (re)sourced
+# per iteration below; redefining the same functions there is harmless.
+# shellcheck disable=SC1090
+source <(sed -n '1,/^# Main script logic$/p' "$SERVICE_PATH/scripts/istio/build_ingress_with_rule" | sed '$d')
+
 for ((i=0; i<NUM_ROUTES; i++)); do
   echo ""
   echo "=== Processing route $((i+1))/$NUM_ROUTES ==="
@@ -71,6 +81,11 @@ for ((i=0; i<NUM_ROUTES; i++)); do
 
   HEADERS_JSON=$(echo "$ROUTE" | jq -c '.headers // []')
   export HEADERS_JSON
+
+  FILTERS_JSON=$(build_filters \
+    "$(echo "$ROUTE" | jq -c '.rewrite // {}')" \
+    "$(echo "$ROUTE" | jq -c '.requestHeaders // {}')")
+  export FILTERS_JSON
 
   echo "Methods: $METHODS_JSON"
   echo "Path: $ROUTE_PATH"

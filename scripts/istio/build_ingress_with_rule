@@ -88,12 +88,57 @@ is_httproute_empty() {
   fi
 }
 
+# Build the Gateway API filters array for a rule. Emits URLRewrite and
+# RequestHeaderModifier only when the route actually asks for them, so a route
+# with neither keeps producing a rule without a `filters` key.
+build_filters() {
+  local rewrite_json="${1:-}"
+  local request_headers_json="${2:-}"
+
+  local filters="[]"
+
+  if [[ -n "$rewrite_json" && "$rewrite_json" != "null" && "$rewrite_json" != "{}" ]]; then
+    local rewrite_filter
+    rewrite_filter=$(echo "$rewrite_json" | jq -c '
+      {type: "URLRewrite", urlRewrite: {}}
+      | if ($rewrite.hostname // "") != "" then .urlRewrite.hostname = $rewrite.hostname else . end
+      | if ($rewrite.path // "") != "" then
+          .urlRewrite.path = {type: "ReplacePrefixMatch", replacePrefixMatch: $rewrite.path}
+        else . end
+    ' --argjson rewrite "$rewrite_json")
+
+    if [[ "$(echo "$rewrite_filter" | jq '.urlRewrite | length')" -gt 0 ]]; then
+      filters=$(echo "$filters" | jq -c --argjson f "$rewrite_filter" '. + [$f]')
+    fi
+  fi
+
+  if [[ -n "$request_headers_json" && "$request_headers_json" != "null" && "$request_headers_json" != "{}" ]]; then
+    local header_filter
+    header_filter=$(echo "$request_headers_json" | jq -c '
+      {type: "RequestHeaderModifier", requestHeaderModifier: {}}
+      | if (($hdrs.set // []) | length) > 0 then .requestHeaderModifier.set = $hdrs.set else . end
+      | if (($hdrs.remove // []) | length) > 0 then .requestHeaderModifier.remove = $hdrs.remove else . end
+    ' --argjson hdrs "$request_headers_json")
+
+    if [[ "$(echo "$header_filter" | jq '.requestHeaderModifier | length')" -gt 0 ]]; then
+      filters=$(echo "$filters" | jq -c --argjson f "$header_filter" '. + [$f]')
+    fi
+  fi
+
+  if [[ "$(echo "$filters" | jq 'length')" -eq 0 ]]; then
+    echo ""
+  else
+    echo "$filters"
+  fi
+}
+
 create_http_rule() {
   local rule_path="$1"
   local service_json="$2"
   local blue_green_config="$3"
   local method="${4:-}"
   local headers_json="${5:-}"
+  local filters_json="${6:-}"
 
   local service_name
   local service_port
@@ -131,6 +176,8 @@ create_http_rule() {
        }))')
   fi
 
+  local rule_json
+
   # Check if there's blue/green configuration
   if [[ "$blue_green_config" != "null" && -n "$blue_green_config" ]]; then
     # Parse blue/green destinations and weights from the annotation
@@ -141,8 +188,8 @@ create_http_rule() {
     blue_service=$(echo "$blue_green_config" | jq -r '.forward.targetGroups[0].serviceName')
     green_service=$(echo "$blue_green_config" | jq -r '.forward.targetGroups[1].serviceName')
 
-    # Create rule with weighted backends (no URL rewrite)
-    jq -n \
+    # Create rule with weighted backends
+    rule_json=$(jq -n \
       --argjson matches "$matches_json" \
       --arg blue_service "$blue_service" \
       --arg green_service "$green_service" \
@@ -163,10 +210,10 @@ create_http_rule() {
             weight: $green_weight
           }
         ]
-      }'
+      }')
   else
-    # Single destination without blue/green (no URL rewrite)
-    jq -n \
+    # Single destination without blue/green
+    rule_json=$(jq -n \
       --argjson matches "$matches_json" \
       --arg service_name "$service_name" \
       --arg service_port "$service_port" \
@@ -178,7 +225,16 @@ create_http_rule() {
             port: ($service_port | tonumber)
           }
         ]
-      }'
+      }')
+  fi
+
+  # Attach filters (URLRewrite / RequestHeaderModifier) only when the route
+  # declares them, so a rule without rewrite/requestHeaders keeps producing no
+  # `filters` key.
+  if [[ -n "$filters_json" && "$filters_json" != "null" ]]; then
+    echo "$rule_json" | jq -c --argjson filters "$filters_json" '.filters = $filters'
+  else
+    echo "$rule_json"
   fi
 }
 
@@ -199,8 +255,16 @@ update_httproute_rule() {
   updated_hr=$(echo "$hr_yaml" | yq eval ".spec.rules[0].matches[0].path.type = \"Exact\"")
   updated_hr=$(echo "$updated_hr" | yq eval ".spec.rules[0].matches[0].path.value = \"$rule_path\"")
 
-  # Remove filters (no URL rewrite needed)
-  updated_hr=$(echo "$updated_hr" | yq eval "del(.spec.rules[0].filters)")
+  # This used to delete .spec.rules[0].filters unconditionally. The working
+  # hypothesis (unconfirmed) is that it avoided a conflict when several routes
+  # write into the same HTTPRoute rule. Preserve that behavior when the
+  # incoming route declares no filters of its own — only skip the deletion
+  # when FILTERS_JSON actually carries a rewrite/requestHeaders filter set for
+  # this route, so routes without rewrite keep being cleaned up exactly as
+  # before.
+  if [[ -z "${FILTERS_JSON:-}" || "${FILTERS_JSON:-}" == "null" ]]; then
+    updated_hr=$(echo "$updated_hr" | yq eval "del(.spec.rules[0].filters)")
+  fi
 
   # Check if there's blue/green configuration
   if [[ "$blue_green_config" != "null" && -n "$blue_green_config" ]]; then
@@ -281,12 +345,13 @@ replace_existing_rule() {
   local rule_index="$5"
   local method="${6:-}"
   local headers_json="${7:-}"
+  local filters_json="${8:-}"
 
   local updated_hr
   local new_rule
 
   # Create the new rule
-  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method" "$headers_json")
+  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method" "$headers_json" "$filters_json")
 
   # Replace the existing rule at the found index
   updated_hr=$(echo "$hr_yaml" | yq eval -o=json '.' | \
@@ -303,12 +368,13 @@ add_new_rule() {
   local blue_green_config="$4"
   local method="${5:-}"
   local headers_json="${6:-}"
+  local filters_json="${7:-}"
 
   local updated_hr
   local new_rule
 
   # Create the new http rule
-  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method" "$headers_json")
+  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method" "$headers_json" "$filters_json")
 
   # Add the new rule to the existing rules array
   updated_hr=$(echo "$hr_yaml" | yq eval ".spec.rules += [$new_rule]")
@@ -368,7 +434,7 @@ echo "Is HTTPRoute empty? $IS_EMPTY"
 
 if [[ "$IS_EMPTY" == "true" ]]; then
   echo "Case 1: Empty HTTPRoute - replacing fallback rule (index 0) with new rule"
-  UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "0" "${METHOD:-}" "${HEADERS_JSON:-}")
+  UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "0" "${METHOD:-}" "${HEADERS_JSON:-}" "${FILTERS_JSON:-}")
   echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
 else
   # Detect the converted path value to match against existing rules
@@ -381,12 +447,12 @@ else
   # if there is a rule for the path we replace it
   if [[ "$RULE_INDEX" != "-1" ]]; then
     echo "Case 2: Replacing existing rule at index $RULE_INDEX"
-    UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "$RULE_INDEX" "${METHOD:-}" "${HEADERS_JSON:-}")
+    UPDATED_HR=$(replace_existing_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "$RULE_INDEX" "${METHOD:-}" "${HEADERS_JSON:-}" "${FILTERS_JSON:-}")
     echo "$UPDATED_HR" | yq "." > "$HTTPROUTE_FILE"
   else
     # if there is no rule for the path we add a new one
     echo "Case 3: Adding new rule"
-    UPDATED_HR=$(add_new_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "${METHOD:-}" "${HEADERS_JSON:-}")
+    UPDATED_HR=$(add_new_rule "$HTTPROUTE" "$RULE_PATH" "$SERVICE" "$BLUE_GREEN_CONFIG" "${METHOD:-}" "${HEADERS_JSON:-}" "${FILTERS_JSON:-}")
 
     # Debug: Check if hostnames and parentRefs are present before saving
     echo "DEBUG: Checking HTTPRoute before saving..."

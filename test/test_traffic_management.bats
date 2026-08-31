@@ -61,3 +61,42 @@ source_build_ingress_functions() {
   run bash -c "echo '$output' | jq -e '.matches[0].headers'"
   assert_failure
 }
+
+@test "el schema expone rewrite por ruta" {
+  run jq -e '.attributes.schema.properties.routes.items.properties.rewrite.type' \
+    "$SERVICE_PATH/specs/service-spec.json.tpl"
+  assert_success
+  assert_output '"object"'
+}
+
+@test "build_filters emite un filtro URLRewrite" {
+  source_build_ingress_functions
+  run build_filters '{"path":"/v2"}' '{}'
+  assert_success
+  assert_output --partial 'URLRewrite'
+  assert_output --partial 'ReplacePrefixMatch'
+}
+
+@test "build_filters devuelve vacio cuando no hay nada que aplicar" {
+  source_build_ingress_functions
+  run build_filters '' ''
+  assert_success
+  assert_output ""
+}
+
+@test "create_http_rule adjunta los filters a la rule" {
+  source_build_ingress_functions
+  run create_http_rule '/api' '{"name":"svc","port":{"number":8080}}' 'null' 'GET' '' \
+    '[{"type":"URLRewrite","urlRewrite":{"path":{"type":"ReplacePrefixMatch","replacePrefixMatch":"/v2"}}}]'
+  assert_success
+  assert_output --partial '"filters"'
+  assert_output --partial 'URLRewrite'
+}
+
+@test "create_http_rule sin filters no agrega la clave" {
+  source_build_ingress_functions
+  run create_http_rule '/api' '{"name":"svc","port":{"number":8080}}' 'null' 'GET' '' ''
+  assert_success
+  run bash -c "echo '$output' | jq -e '.filters'"
+  assert_failure
+}

@@ -56,6 +56,16 @@
                                                 "type": "Control",
                                                 "label": "Header matches",
                                                 "scope": "#/properties/headers"
+                                            },
+                                            {
+                                                "type": "Control",
+                                                "label": "URL rewrite",
+                                                "scope": "#/properties/rewrite"
+                                            },
+                                            {
+                                                "type": "Control",
+                                                "label": "Request headers",
+                                                "scope": "#/properties/requestHeaders"
                                             }
                                         ]
                                     },
@@ -152,6 +162,66 @@
                                                 "RegularExpression"
                                             ],
                                             "default": "Exact"
+                                        }
+                                    }
+                                },
+                                "editableOn": [
+                                    "create",
+                                    "update"
+                                ]
+                            },
+                            "rewrite": {
+                                "type": "object",
+                                "title": "URL rewrite",
+                                "description": "Rewrites the request before it reaches the backend. Leave empty to forward the path unchanged.",
+                                "properties": {
+                                    "path": {
+                                        "type": "string",
+                                        "title": "Replace path prefix",
+                                        "pattern": "^/([a-zA-Z0-9_\\-\\./]*)?$",
+                                        "description": "Replaces the matched prefix. Example: a route on /old with /new turns /old/items into /new/items"
+                                    },
+                                    "hostname": {
+                                        "type": "string",
+                                        "title": "Replace hostname"
+                                    }
+                                },
+                                "editableOn": [
+                                    "create",
+                                    "update"
+                                ]
+                            },
+                            "requestHeaders": {
+                                "type": "object",
+                                "title": "Request headers",
+                                "description": "Headers added to or removed from the request before it reaches the backend.",
+                                "properties": {
+                                    "set": {
+                                        "type": "array",
+                                        "title": "Set",
+                                        "items": {
+                                            "type": "object",
+                                            "required": [
+                                                "name",
+                                                "value"
+                                            ],
+                                            "properties": {
+                                                "name": {
+                                                    "type": "string",
+                                                    "title": "Header"
+                                                },
+                                                "value": {
+                                                    "type": "string",
+                                                    "title": "Value"
+                                                }
+                                            }
+                                        }
+                                    },
+                                    "remove": {
+                                        "type": "array",
+                                        "title": "Remove",
+                                        "items": {
+                                            "type": "string"
                                         }
                                     }
                                 },
