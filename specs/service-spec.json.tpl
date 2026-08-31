@@ -70,8 +70,7 @@
                         "required": [
                             "methods",
                             "path",
-                            "scope",
-                            "groups"
+                            "scope"
                         ],
                         "properties": {
                             "path": {
@@ -109,13 +108,12 @@
                             "groups": {
                                 "type": "array",
                                 "title": "Authorized Groups",
-                                "description": "Groups allowed to access this route. Add each group name and press Add.",
+                                "description": "Groups allowed to access this route. Leave empty to allow any authenticated request.",
                                 "items": {
                                     "type": "string",
                                     "pattern": "^[a-zA-Z0-9_-]+$"
                                 },
                                 "uniqueItems": true,
-                                "minItems": 1,
                                 "editableOn": [
                                     "create",
                                     "update"
