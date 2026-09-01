@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.2.3...v0.3.0) (2026-09-01)
+
+
+### Features
+
+* **ci:** build+push the worker image and register its artifact on release ([5d8bb6c](https://github.com/nullplatform/services-endpoint-exposer/commit/5d8bb6c0ad4fb390040f8b3ec8292f13dc242b9f))
+* **ci:** build+push the worker image and register its artifact on release ([2cb16a0](https://github.com/nullplatform/services-endpoint-exposer/commit/2cb16a0608fd1bc591a54e624606139cf1a3b8a2))
+
 ## [0.2.3](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.2.2...v0.2.3) (2026-08-10)
 
 
