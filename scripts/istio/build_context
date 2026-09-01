@@ -43,9 +43,11 @@ if [[ "$(echo "$ROUTES_JSON" | jq 'length')" -gt 0 && -n "$APPLICATION_ID" ]]; t
     )')
 fi
 
-# Split routes by visibility
+# Split routes by visibility. "private" is the value the v1 spec wrote; treat it
+# as an alias of "internal" so migrated instances keep routing to the private
+# gateway instead of being silently dropped by both filters.
 PUBLIC_ROUTES_JSON=$(echo "$ROUTES_JSON" | jq -c '[.[] | select(.visibility == "public" or .visibility == null or .visibility == "")]')
-PRIVATE_ROUTES_JSON=$(echo "$ROUTES_JSON" | jq -c '[.[] | select(.visibility == "internal")]')
+PRIVATE_ROUTES_JSON=$(echo "$ROUTES_JSON" | jq -c '[.[] | select(.visibility == "internal" or .visibility == "private")]')
 
 # Only set OUTPUT_DIR if not already set (allows tests to override)
 if [[ -z "${OUTPUT_DIR:-}" ]]; then

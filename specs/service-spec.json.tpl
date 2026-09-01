@@ -44,11 +44,21 @@
                                                         "type": "Control",
                                                         "label": "Scope",
                                                         "scope": "#/properties/scope"
-                                                    },
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                "type": "HorizontalLayout",
+                                                "elements": [
                                                     {
                                                         "type": "Control",
                                                         "label": "Weight",
                                                         "scope": "#/properties/weight"
+                                                    },
+                                                    {
+                                                        "type": "Control",
+                                                        "label": "Visibility",
+                                                        "scope": "#/properties/visibility"
                                                     }
                                                 ]
                                             },
@@ -106,6 +116,19 @@
                                 "additionalKeywords": {
                                     "enum": "[.scopes[]?.slug] | if length == 0 then [\"No scopes available for selected environment\"] else . end"
                                 }
+                            },
+                            "visibility": {
+                                "type": "string",
+                                "title": "Visibility",
+                                "description": "Leave empty to inherit the scope's own visibility. Set it to override which gateway serves this route.",
+                                "enum": [
+                                    "public",
+                                    "internal"
+                                ],
+                                "editableOn": [
+                                    "create",
+                                    "update"
+                                ]
                             },
                             "weight": {
                                 "type": "integer",
