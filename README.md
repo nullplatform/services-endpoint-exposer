@@ -9,8 +9,9 @@ Developers declare which HTTP routes they want to expose, which nullplatform sco
 - Creates **HTTPRoutes** (Kubernetes Gateway API v1) pointing to the right backend service
 - Creates **AuthorizationPolicies** enforcing group-based access control
 - Creates **RequestAuthentication** resources validating JWT tokens (Cognito) or delegating to AVP
+- Shapes the traffic each route takes: header matches, URL and header rewrites, and weights across scopes — see [docs/traffic-management.md](docs/traffic-management.md)
 
-Route visibility is resolved automatically from the scope's own `visibility` attribute (`external` → public gateway, `internal` → private gateway).
+Route visibility is resolved from the scope's own `visibility` attribute (`external` → public gateway, `internal` → private gateway), and a route can override it for itself.
 
 ### Supported auth schemes
 
@@ -30,7 +31,18 @@ When creating or updating the service, developers configure one or more routes:
 | **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) |
 | **Path** | Route path. Supports exact (`/api/users`), parameterized (`/api/users/{id}`), and wildcard (`/api/users/*`) |
 | **Scope** | nullplatform scope slug that backs this route |
-| **Authorized Groups** | Comma-separated list of groups allowed to call this route (e.g. `admin, read-only`) |
+| **Authorized Groups** | Groups allowed to call this route (e.g. `admin`, `read-only`). Leave it empty and the route answers without a token |
+| **Visibility** | `public` or `internal`, overriding the scope's own visibility for this route alone |
+| **Weight** | Share of traffic (0-100) when several routes declare the same path and method against different scopes |
+| **Match on request header** | The route only matches when every listed header matches, `Exact` or `RegularExpression` |
+| **URL rewrite** | Replaces the matched path prefix and/or the hostname before the request reaches the backend |
+| **Add or remove request headers** | Headers set on or removed from the request on its way to the backend |
+
+The last five shape traffic rather than gate it, and all of them are optional:
+a route that declares none behaves as it did before they existed. See
+[docs/traffic-management.md](docs/traffic-management.md) for what each one
+generates, the examples, and the limits worth knowing before designing around
+them.
 
 Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below).
 
