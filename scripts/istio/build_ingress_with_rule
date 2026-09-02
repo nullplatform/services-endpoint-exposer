@@ -92,11 +92,14 @@ is_httproute_empty() {
 # RequestHeaderModifier only when the route actually asks for them, so a route
 # with neither keeps producing a rule without a `filters` key.
 # Read a route's request-header directives. The spec declares the property as
-# `requestHeaders`, but the platform delivers the action parameters with the
-# keys in snake_case, so the workflow receives `request_headers` instead and a
-# plain `.requestHeaders` read silently yields nothing. Accept both.
+# `request_headers`, in snake_case, because the platform normalizes the keys of
+# the action parameters that way: a camelCase property is stored under one
+# spelling and delivered under the other, and an entity that ends up holding
+# both spellings rejects every later write ("Key `request_headers` would
+# overwrite existing key of the given JSON object"). The camelCase read stays
+# for instances created before the rename.
 route_request_headers() {
-  echo "${1:-\{\}}" | jq -c '.requestHeaders // .request_headers // {}'
+  echo "${1:-\{\}}" | jq -c '.request_headers // .requestHeaders // {}'
 }
 
 build_filters() {

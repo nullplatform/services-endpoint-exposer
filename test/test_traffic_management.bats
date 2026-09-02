@@ -141,20 +141,21 @@ source_build_ingress_functions() {
   assert_failure
 }
 
-# La plataforma entrega los parametros de la accion con las claves en
-# snake_case: una ruta declarada como `requestHeaders` en la spec llega al
-# workflow como `request_headers`. Verificado el 2026-09-02 contra la API
-# (action.parameters guarda `requestHeaders`, el ROUTES_JSON del agente trae
-# `request_headers`), y el efecto era que el RequestHeaderModifier no se
-# emitia sin ningun error visible.
-@test "route_request_headers lee la clave camelCase que declara la spec" {
+# La plataforma normaliza a snake_case las claves de los parametros de la
+# accion: una propiedad declarada en camelCase se guarda con una forma y se
+# entrega con la otra. Verificado el 2026-09-02 contra la API, y cuando las
+# dos formas conviven en la entidad, toda escritura posterior falla con
+# "Key `request_headers` would overwrite existing key of the given JSON
+# object". Por eso la spec declara `request_headers` y el lector acepta las
+# dos: las instancias creadas antes del rename guardaron la camelCase.
+@test "route_request_headers lee la clave camelCase de instancias viejas" {
   source_build_ingress_functions
   run route_request_headers '{"path":"/a","requestHeaders":{"set":[{"name":"x-a","value":"1"}]}}'
   assert_success
   assert_output '{"set":[{"name":"x-a","value":"1"}]}'
 }
 
-@test "route_request_headers lee la clave snake_case que entrega la plataforma" {
+@test "route_request_headers lee la clave snake_case que declara la spec" {
   source_build_ingress_functions
   run route_request_headers '{"path":"/a","request_headers":{"set":[{"name":"x-a","value":"1"}]}}'
   assert_success
@@ -168,7 +169,7 @@ source_build_ingress_functions() {
   assert_output '{}'
 }
 
-@test "build_filters emite RequestHeaderModifier con la clave snake_case" {
+@test "build_filters emite RequestHeaderModifier con la clave de la spec" {
   source_build_ingress_functions
   ROUTE='{"path":"/a","request_headers":{"set":[{"name":"x-a","value":"1"}]}}'
   run build_filters '{}' "$(route_request_headers "$ROUTE")"
@@ -194,8 +195,21 @@ source_build_ingress_functions() {
 }
 
 @test "los dos controles de headers tienen etiquetas inequivocas" {
-  run jq -r '[.. | objects | select(.scope? == "#/properties/headers" or .scope? == "#/properties/requestHeaders") | .label] | sort | join("|")' \
+  run jq -r '[.. | objects | select(.scope? == "#/properties/headers" or .scope? == "#/properties/request_headers") | .label] | sort | join("|")' \
     "$SERVICE_PATH/specs/service-spec.json.tpl"
   assert_success
   assert_output 'Add or remove request headers|Match on request header'
+}
+
+@test "la spec declara request_headers y ninguna propiedad camelCase" {
+  run jq -e '.attributes.schema.properties.routes.items.properties.request_headers' \
+    "$SERVICE_PATH/specs/service-spec.json.tpl"
+  assert_success
+
+  # Una propiedad multipalabra en camelCase se guarda con una forma y se
+  # entrega con la otra, y la entidad queda con las dos claves y bloqueada.
+  run jq -r '[.attributes.schema.properties.routes.items.properties | keys[] | select(test("[a-z][A-Z]"))] | join(",")' \
+    "$SERVICE_PATH/specs/service-spec.json.tpl"
+  assert_success
+  assert_output ''
 }

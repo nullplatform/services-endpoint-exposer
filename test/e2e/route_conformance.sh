@@ -110,11 +110,12 @@ domain_for() {
   echo "$SCOPES" | jq -r --arg s "$1" '.[] | select(.slug == $s) | .domain' | head -1
 }
 
-# The platform delivers action parameters with snake_cased keys, so a stored
-# route can carry either spelling of requestHeaders.
+# The spec declares request_headers in snake_case (the platform normalizes the
+# keys either way); instances created before that rename stored the camelCase
+# spelling, so read both.
 route_headers() { echo "$1" | jq -c '.headers // []'; }
 route_rewrite() { echo "$1" | jq -c '.rewrite // {}'; }
-route_reqhdrs() { echo "$1" | jq -c '.requestHeaders // .request_headers // {}'; }
+route_reqhdrs() { echo "$1" | jq -c '.request_headers // .requestHeaders // {}'; }
 
 # Routes sharing path+method are one Gateway API rule with weighted backends,
 # so the weight check is per group, not per route.

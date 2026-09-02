@@ -80,7 +80,7 @@
                                             {
                                                 "type": "Control",
                                                 "label": "Add or remove request headers",
-                                                "scope": "#/properties/requestHeaders"
+                                                "scope": "#/properties/request_headers"
                                             }
                                         ]
                                     },
@@ -246,7 +246,7 @@
                                     "update"
                                 ]
                             },
-                            "requestHeaders": {
+                            "request_headers": {
                                 "type": "object",
                                 "title": "Add or remove request headers",
                                 "description": "Headers added to or removed from the request before it reaches the backend.",
