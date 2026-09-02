@@ -188,14 +188,28 @@ while read -r group; do
     fi
   fi
 
-  # F5a - with a header match declared, the same request without the header
-  # must not reach the rule.
+  # F5a - without its declared headers the request must not reach this rule. A
+  # 200 alone does not prove that it did: another HTTPRoute on the same
+  # hostname absorbs the fallthrough, and a scope publishes its own catch-all
+  # on "/". When the rule also rewrites, the served path tells the two apart -
+  # an unrewritten path means some other route answered.
   if [[ "$(echo "$headers" | jq 'length')" -gt 0 ]]; then
     code=$(curl_code "$url" "$gmethod")
-    if [[ "$code" == "200" ]]; then
-      record FAIL "F5a header match" "$gmethod $probe answered 200 without the declared header"
+    if [[ "$code" != "200" ]]; then
+      record PASS "F5a header match" "$gmethod $probe -> $code without the header"
     else
-      record PASS "F5a header match" "$gmethod $probe -> $code without the header, 200 with it"
+      rw=$(echo "$rewrite" | jq -r '.path // ""')
+      served=""
+      if [[ -n "$rw" ]]; then
+        served=$(curl_body "$url" "$gmethod" | jq -r "$PATH_FIELD // empty" 2>/dev/null || true)
+      fi
+      if [[ -z "$rw" || -z "$served" ]]; then
+        record SKIP "F5a header match" "$gmethod $probe answered 200 without the header, cannot tell which route served it"
+      elif [[ "$served" == "$rw"* ]]; then
+        record FAIL "F5a header match" "$gmethod $probe was served by this rule without its declared header"
+      else
+        record PASS "F5a header match" "$gmethod $probe -> another route served $served without the header"
+      fi
     fi
   fi
 
