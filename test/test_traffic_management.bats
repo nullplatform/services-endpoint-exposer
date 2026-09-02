@@ -140,3 +140,62 @@ source_build_ingress_functions() {
   run bash -c "echo '$output' | jq -e '.backendRefs[0].weight'"
   assert_failure
 }
+
+# La plataforma entrega los parametros de la accion con las claves en
+# snake_case: una ruta declarada como `requestHeaders` en la spec llega al
+# workflow como `request_headers`. Verificado el 2026-09-02 contra la API
+# (action.parameters guarda `requestHeaders`, el ROUTES_JSON del agente trae
+# `request_headers`), y el efecto era que el RequestHeaderModifier no se
+# emitia sin ningun error visible.
+@test "route_request_headers lee la clave camelCase que declara la spec" {
+  source_build_ingress_functions
+  run route_request_headers '{"path":"/a","requestHeaders":{"set":[{"name":"x-a","value":"1"}]}}'
+  assert_success
+  assert_output '{"set":[{"name":"x-a","value":"1"}]}'
+}
+
+@test "route_request_headers lee la clave snake_case que entrega la plataforma" {
+  source_build_ingress_functions
+  run route_request_headers '{"path":"/a","request_headers":{"set":[{"name":"x-a","value":"1"}]}}'
+  assert_success
+  assert_output '{"set":[{"name":"x-a","value":"1"}]}'
+}
+
+@test "route_request_headers devuelve objeto vacio cuando la ruta no declara headers" {
+  source_build_ingress_functions
+  run route_request_headers '{"path":"/a"}'
+  assert_success
+  assert_output '{}'
+}
+
+@test "build_filters emite RequestHeaderModifier con la clave snake_case" {
+  source_build_ingress_functions
+  ROUTE='{"path":"/a","request_headers":{"set":[{"name":"x-a","value":"1"}]}}'
+  run build_filters '{}' "$(route_request_headers "$ROUTE")"
+  assert_success
+  assert_output --partial 'RequestHeaderModifier'
+  assert_output --partial 'x-a'
+}
+
+@test "el array routes se declara editable en update" {
+  run jq -e '.attributes.schema.properties.routes.editableOn' \
+    "$SERVICE_PATH/specs/service-spec.json.tpl"
+  assert_success
+  assert_output --partial '"update"'
+}
+
+@test "path, scope y methods se declaran editables en update" {
+  for field in path scope methods; do
+    run jq -e --arg f "$field" \
+      '.attributes.schema.properties.routes.items.properties[$f].editableOn | index("update")' \
+      "$SERVICE_PATH/specs/service-spec.json.tpl"
+    assert_success
+  done
+}
+
+@test "los dos controles de headers tienen etiquetas inequivocas" {
+  run jq -r '[.. | objects | select(.scope? == "#/properties/headers" or .scope? == "#/properties/requestHeaders") | .label] | sort | join("|")' \
+    "$SERVICE_PATH/specs/service-spec.json.tpl"
+  assert_success
+  assert_output 'Add or remove request headers|Match on request header'
+}

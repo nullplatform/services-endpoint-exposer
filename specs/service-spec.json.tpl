@@ -69,7 +69,7 @@
                                             },
                                             {
                                                 "type": "Control",
-                                                "label": "Header matches",
+                                                "label": "Match on request header",
                                                 "scope": "#/properties/headers"
                                             },
                                             {
@@ -79,7 +79,7 @@
                                             },
                                             {
                                                 "type": "Control",
-                                                "label": "Request headers",
+                                                "label": "Add or remove request headers",
                                                 "scope": "#/properties/requestHeaders"
                                             }
                                         ]
@@ -95,6 +95,10 @@
                 "routes": {
                     "type": "array",
                     "minItems": 1,
+                    "editableOn": [
+                        "create",
+                        "update"
+                    ],
                     "items": {
                         "type": "object",
                         "required": [
@@ -107,7 +111,11 @@
                                 "type": "string",
                                 "title": "Path",
                                 "pattern": "^/([a-zA-Z0-9_\\-\\.:\\*{}/]*)?$",
-                                "description": "Must start with /. Examples: /, /api, /api/v1/users, /items/:id, /files/*"
+                                "description": "Must start with /. Examples: /, /api, /api/v1/users, /items/:id, /files/*",
+                                "editableOn": [
+                                    "create",
+                                    "update"
+                                ]
                             },
                             "scope": {
                                 "type": "string",
@@ -115,7 +123,11 @@
                                 "description": "Scope name where the rules apply.",
                                 "additionalKeywords": {
                                     "enum": "[.scopes[]?.slug] | if length == 0 then [\"No scopes available for selected environment\"] else . end"
-                                }
+                                },
+                                "editableOn": [
+                                    "create",
+                                    "update"
+                                ]
                             },
                             "visibility": {
                                 "type": "string",
@@ -144,6 +156,10 @@
                             "methods": {
                                 "type": "array",
                                 "title": "Verbs",
+                                "editableOn": [
+                                    "create",
+                                    "update"
+                                ],
                                 "items": {
                                     "type": "string",
                                     "enum": [
@@ -175,7 +191,7 @@
                             },
                             "headers": {
                                 "type": "array",
-                                "title": "Header matches",
+                                "title": "Match on request header",
                                 "description": "The route only matches when every header listed here matches the request.",
                                 "items": {
                                     "type": "object",
@@ -232,7 +248,7 @@
                             },
                             "requestHeaders": {
                                 "type": "object",
-                                "title": "Request headers",
+                                "title": "Add or remove request headers",
                                 "description": "Headers added to or removed from the request before it reaches the backend.",
                                 "properties": {
                                     "set": {

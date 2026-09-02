@@ -84,7 +84,7 @@ for ((i=0; i<NUM_ROUTES; i++)); do
 
   FILTERS_JSON=$(build_filters \
     "$(echo "$ROUTE" | jq -c '.rewrite // {}')" \
-    "$(echo "$ROUTE" | jq -c '.requestHeaders // {}')")
+    "$(route_request_headers "$ROUTE")")
   export FILTERS_JSON
 
   ROUTE_WEIGHT=$(echo "$ROUTE" | jq -r '.weight // empty')

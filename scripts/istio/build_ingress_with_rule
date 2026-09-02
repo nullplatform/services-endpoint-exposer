@@ -91,6 +91,14 @@ is_httproute_empty() {
 # Build the Gateway API filters array for a rule. Emits URLRewrite and
 # RequestHeaderModifier only when the route actually asks for them, so a route
 # with neither keeps producing a rule without a `filters` key.
+# Read a route's request-header directives. The spec declares the property as
+# `requestHeaders`, but the platform delivers the action parameters with the
+# keys in snake_case, so the workflow receives `request_headers` instead and a
+# plain `.requestHeaders` read silently yields nothing. Accept both.
+route_request_headers() {
+  echo "${1:-\{\}}" | jq -c '.requestHeaders // .request_headers // {}'
+}
+
 build_filters() {
   local rewrite_json="${1:-}"
   local request_headers_json="${2:-}"
