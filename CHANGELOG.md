@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.1](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.3.0...v0.3.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **docker:** install yq-go for HTTPRoute manipulation ([7a276f8](https://github.com/nullplatform/services-endpoint-exposer/commit/7a276f8dfa17c7482bc1eebd10d9e982a8f72206))
+* **docker:** install yq-go for HTTPRoute manipulation ([90a205e](https://github.com/nullplatform/services-endpoint-exposer/commit/90a205e50b3193f80c0674f347b3a4b1fb70930f))
+
 ## [0.3.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.2.3...v0.3.0) (2026-09-01)
 
 
