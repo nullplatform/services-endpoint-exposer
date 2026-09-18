@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.3.1...v0.4.0) (2026-09-18)
+
+
+### Features
+
+* dependabot for base image bumps ([cedaddc](https://github.com/nullplatform/services-endpoint-exposer/commit/cedaddc7211e78eafac567f8733e388e51146967))
+* dependabot for base image bumps ([054faac](https://github.com/nullplatform/services-endpoint-exposer/commit/054faac1133779ff9183d8efd6b7298dca2edea4))
+
+
+### Bug Fixes
+
+* **ci:** auto-merge the release PR from workflow_run; Dependabot commits as fix(deps) ([c2fbe63](https://github.com/nullplatform/services-endpoint-exposer/commit/c2fbe63322ba05a5beac54d3f0868e69d82ae410))
+* **deps:** bump nullplatform/scopes/worker-bridge from 1.0.0 to 1.1.1 ([0e5ac7d](https://github.com/nullplatform/services-endpoint-exposer/commit/0e5ac7d1bb893f1ea146215cdb454ca44f34dbaf))
+
 ## [0.3.1](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.3.0...v0.3.1) (2026-09-14)
 
 
