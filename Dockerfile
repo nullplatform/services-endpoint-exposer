@@ -4,7 +4,7 @@
 # bridge. The bridge dials over gRPC and runs the bash entrypoint on each
 # package-exec action; this image adds the cluster tooling the exposer's
 # workflows need and bakes the service in.
-FROM public.ecr.aws/nullplatform/scopes/worker-bridge:1.0.0
+FROM public.ecr.aws/nullplatform/scopes/worker-bridge:1.1.1
 
 # Tooling the exposer workflows call (istio/gateway objects, template
 # rendering): kubectl + gomplate + yq (HTTPRoute YAML manipulation in
