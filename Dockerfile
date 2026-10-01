@@ -10,7 +10,17 @@ FROM public.ecr.aws/nullplatform/scopes/worker-bridge:2.0.1
 # rendering): kubectl + gomplate + yq (HTTPRoute YAML manipulation in
 # scripts/istio/build_ingress_with_rule). bash, jq, np, base64 and curl
 # ship in the base.
-RUN apk add --no-cache kubectl gomplate yq-go
+RUN apk add --no-cache gomplate yq-go
+
+# kubectl is pinned, not taken from apk: kubectl supports API servers within one
+# minor of itself, so its version follows the clusters, not the base's Alpine branch.
+ARG KUBECTL_VERSION=v1.33.1
+ARG TARGETARCH
+RUN curl -fsSL -o /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+    && echo "$(curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256")  /usr/local/bin/kubectl" | sha256sum -c - \
+    && chmod +x /usr/local/bin/kubectl \
+    && kubectl version --client
 
 # Bake the service in and point the bridge at its entrypoint.
 COPY . /app/pkg
