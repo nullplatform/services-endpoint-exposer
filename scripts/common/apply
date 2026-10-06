@@ -48,6 +48,17 @@ if [[ -f "$OUTPUT_DIR/.authz-private-deleted" ]]; then
   rm "$OUTPUT_DIR/.authz-private-deleted"
 fi
 
+# The delete workflow never renders the HTTPRoutes, so there are no yaml files
+# to `kubectl delete -f`. Remove every HTTPRoute this service owns by label
+# instead; otherwise they outlive the service and keep routing traffic.
+if [[ "$ACTION" == "delete" ]]; then
+  echo "Deleting HTTPRoutes labeled nullplatform.com/service-id=$SERVICE_ID in namespace $K8S_NAMESPACE"
+  if [[ "$DRY_RUN" == "false" ]]; then
+    kubectl delete httproute -n "$K8S_NAMESPACE" \
+      -l "nullplatform.com/service-id=$SERVICE_ID" --ignore-not-found
+  fi
+fi
+
 # Collect all yaml files into a temporary directory for batch apply
 TEMP_APPLY_DIR="$OUTPUT_DIR/batch-apply"
 mkdir -p "$TEMP_APPLY_DIR"

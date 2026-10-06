@@ -137,3 +137,22 @@ EOF
   # Should be in apply directory
   assert_file_exists "$OUTPUT_DIR/apply/test-resource.yaml"
 }
+
+@test "apply: delete removes the service's HTTPRoutes by label" {
+  export ACTION="delete"
+  export DRY_RUN="false"
+
+  run bash "$SERVICE_PATH/scripts/common/apply"
+
+  assert_success
+  assert_output --partial "Mock kubectl called with: delete httproute -n $K8S_NAMESPACE -l nullplatform.com/service-id=$SERVICE_ID --ignore-not-found"
+}
+
+@test "apply: apply does not delete HTTPRoutes by label" {
+  export DRY_RUN="false"
+
+  run bash "$SERVICE_PATH/scripts/common/apply"
+
+  assert_success
+  [[ "$output" != *"delete httproute"* ]]
+}

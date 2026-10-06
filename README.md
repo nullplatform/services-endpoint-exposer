@@ -182,6 +182,8 @@ module "scope_definition_agent_association" {
 
 Without this override wired into the scope's channel, HTTPRoutes will point to stale backend service names after a blue/green deploy and traffic will break.
 
+The override looks up the service spec by the slug in `container-scope-override/values.yaml` (`http-route-access-control`, the slug this repo's spec gets). If your installation registered the spec under another slug, set `EXPOSER_SERVICE_SPECIFICATION_SLUG` in the agent environment (e.g. `EXPOSER_SERVICE_SPECIFICATION_SLUG=endpoint-exposer`). When the spec isn't visible to the deploying application the sync step is skipped, so apps that don't use the exposer deploy normally. Every **active** exposer service of the application is updated; services whose create didn't succeed are skipped because nullplatform rejects updates on them.
+
 ---
 
 ## How auth resolution works
