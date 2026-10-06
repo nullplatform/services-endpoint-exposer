@@ -2,7 +2,6 @@
 
 set -euo pipefail
 
-CONTEXT="${CONTEXT:-${NP_ACTION_CONTEXT:-}}"
 AUTH_TYPE="${AUTH_TYPE:-aws-avp}"
 
 # Compute summary for each route: "METHOD1, METHOD2 | /path | group1, group2"
@@ -21,12 +20,19 @@ ROUTES_WITH_SUMMARY=$(echo "${ROUTES_JSON:-[]}" | jq -c '
   })
 ')
 
+# Only send the keys this script produces. The notification delivers the
+# action parameters snake_cased (publicDomain -> public_domain); echoing them
+# back stored both spellings in the action results, and nullplatform's
+# snake->camel conversion then throws "Key `privateDomain` would overwrite
+# existing key" on every read of the action. The provisioner turns that into
+# "Unknown error occurred while calling http endpoint" and marks the action
+# failed. The API merges these keys into the results it already holds.
 if [[ "$AUTH_TYPE" == "aws-avp" ]]; then
   AVP_POLICY_STORE_ARN="${AVP_POLICY_STORE_ARN:-}"
-  RESULTS=$(echo "$CONTEXT" | jq \
+  RESULTS=$(jq -n \
     --arg avp_policy_store_arn "$AVP_POLICY_STORE_ARN" \
     --argjson routes "$ROUTES_WITH_SUMMARY" \
-    '(.notification.parameters // .parameters // {}) + {
+    '{
       avp_policy_store_arn: $avp_policy_store_arn,
       routes: $routes
     }')
@@ -37,9 +43,7 @@ if [[ "$AUTH_TYPE" == "aws-avp" ]]; then
   np service patch --id "$SERVICE_ID" \
     --body "{\"attributes\": {\"avp_policy_store_arn\": \"$AVP_POLICY_STORE_ARN\", \"routes\": $ROUTES_WITH_SUMMARY}}"
 else
-  RESULTS=$(echo "$CONTEXT" | jq \
-    --argjson routes "$ROUTES_WITH_SUMMARY" \
-    '(.notification.parameters // .parameters // {}) + {routes: $routes}')
+  RESULTS=$(jq -n --argjson routes "$ROUTES_WITH_SUMMARY" '{routes: $routes}')
 
   echo "Storing service results (aws-cognito)"
   np service action update --results "$RESULTS"

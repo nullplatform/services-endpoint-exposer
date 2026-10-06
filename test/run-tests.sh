@@ -48,6 +48,7 @@ TEST_FILES=(
   "test_authorization_policy.bats"
   "test_apply_cleanup.bats"
   "test_sync_exposer.bats"
+  "test_update_service_results.bats"
   "test_integration.bats"
 )
 
