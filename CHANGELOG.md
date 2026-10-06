@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.4.1...v0.5.0) (2026-10-06)
+
+
+### Features
+
+* run the worker image as a non-root user ([176c22a](https://github.com/nullplatform/services-endpoint-exposer/commit/176c22adfc4e1501bbae163dd1a7ba4b183251fc))
+* run the worker image as a non-root user ([e3b48d9](https://github.com/nullplatform/services-endpoint-exposer/commit/e3b48d93b2a82d6585a37b43c36a01b6fee31dbe))
+
 ## [0.4.1](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.4.0...v0.4.1) (2026-10-01)
 
 
