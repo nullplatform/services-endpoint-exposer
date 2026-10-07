@@ -24,6 +24,9 @@ steps:
     file: "$SERVICE_PATH/scripts/common/manage_policies"
     configuration:
       ACTION: "delete"
+  - name: "sync gateway baseline"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
   - name: apply
     type: script
     file: "$SERVICE_PATH/scripts/common/apply"
