@@ -47,6 +47,7 @@ TEST_FILES=(
   "test_build_httproute.bats"
   "test_authorization_policy.bats"
   "test_apply_cleanup.bats"
+  "test_gateway_baseline.bats"
   "test_integration.bats"
 )
 
