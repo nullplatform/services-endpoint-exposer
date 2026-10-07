@@ -56,6 +56,11 @@ steps:
     file: "$SERVICE_PATH/scripts/common/manage_policies"
     configuration:
       ACTION: "apply"
+  - name: "sync gateway baseline"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
+    configuration:
+      BASELINE_INCLUDE_RENDERED: "true"
   - name: apply
     type: script
     file: "$SERVICE_PATH/scripts/common/apply"

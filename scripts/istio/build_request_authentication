@@ -8,7 +8,7 @@ echo "=== Building Cognito RequestAuthentication ==="
 
 if [[ -z "${COGNITO_USER_POOL_ARN:-}" || "$COGNITO_USER_POOL_ARN" == "null" || "$COGNITO_USER_POOL_ARN" == "" ]]; then
   echo "No COGNITO_USER_POOL_ARN set, skipping RequestAuthentication generation"
-  exit 0
+  return 0  # sourced by manage_policies
 fi
 
 # Derive issuer and jwks_uri from ARN

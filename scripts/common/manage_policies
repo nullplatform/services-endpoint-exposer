@@ -40,11 +40,12 @@ case "$AUTH_TYPE" in
         source "$SERVICE_PATH/scripts/np/update_service_results"
         ;;
       sync)
-        # Delete existing AuthorizationPolicies first so removed/changed routes don't leave orphans
+        # Policies are applied in place and only the stale ones deleted
+        # (replace_allow_policies), so the routes never go without them.
         # RequestAuthentication is cluster-wide and intentionally not deleted on sync
-        source "$SERVICE_PATH/scripts/istio/delete_allow_policies"
         source "$SERVICE_PATH/scripts/istio/build_request_authentication"
         source "$SERVICE_PATH/scripts/istio/build_allow_policies"
+        source "$SERVICE_PATH/scripts/istio/replace_allow_policies"
         source "$SERVICE_PATH/scripts/np/update_service_results"
         ;;
       delete)
