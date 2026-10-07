@@ -42,7 +42,21 @@ for SUFFIX in public private; do
       '[.spec.jwtRules[].issuer] | contains([$issuer])')
 
     if [[ "$ALREADY_HAS_ISSUER" == "true" ]]; then
-      echo "ℹ️  cognito-jwt-${SUFFIX} already has issuer $ISSUER — skipping"
+      # Ensure every rule forwards the original token (resources created before this flag existed)
+      MISSING_FORWARD=$(echo "$EXISTING" | jq -r \
+        '[.spec.jwtRules[] | select(.forwardOriginalToken != true)] | length > 0')
+
+      if [[ "$MISSING_FORWARD" != "true" ]]; then
+        echo "ℹ️  cognito-jwt-${SUFFIX} already has issuer $ISSUER — skipping"
+        continue
+      fi
+
+      echo "cognito-jwt-${SUFFIX} already has issuer $ISSUER — enabling forwardOriginalToken..."
+      kubectl patch requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" \
+        --type=json \
+        -p="$(echo "$EXISTING" | jq \
+          '[{op: "replace", path: "/spec/jwtRules", value: (.spec.jwtRules | map(. + {forwardOriginalToken: true}))}]')"
+      echo "✅ Enabled forwardOriginalToken on cognito-jwt-${SUFFIX}"
       continue
     fi
 
@@ -52,8 +66,8 @@ for SUFFIX in public private; do
       --arg issuer "$ISSUER" \
       --arg jwks_uri "$JWKS_URI" \
       --arg cookie_name "${COGNITO_TOKEN_COOKIE_NAME:-}" \
-      '.spec.jwtRules + [
-        {issuer: $issuer, jwksUri: $jwks_uri}
+      '(.spec.jwtRules | map(. + {forwardOriginalToken: true})) + [
+        {issuer: $issuer, jwksUri: $jwks_uri, forwardOriginalToken: true}
         + (if $cookie_name != "" then {fromCookies: [$cookie_name]} else {} end)
       ]')
 
