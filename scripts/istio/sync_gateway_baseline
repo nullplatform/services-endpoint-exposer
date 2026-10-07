@@ -40,7 +40,10 @@ main() {
     DONE=false
 
     for _ in 1 2 3 4 5; do
-      POLICIES=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" -o json)
+      # Policies in the mesh root namespace apply to the gateway too.
+    POLICIES=$(jq -n --argjson a "$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" -o json)" \
+      --argjson b "$(kubectl get authorizationpolicy -n "${ISTIO_ROOT_NAMESPACE:-istio-system}" -o json 2>/dev/null || echo '{"items": []}')" \
+      '{items: ($a.items + $b.items)}')
 
       # Before apply, also count the policies this run is about to create, so the
       # baseline already excludes their hosts.

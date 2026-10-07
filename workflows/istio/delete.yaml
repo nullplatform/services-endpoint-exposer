@@ -19,6 +19,9 @@ steps:
         type: environment
       - name: AVP_POLICY_STORE_ID
         type: environment
+  - name: "delete httproutes"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/delete_httproutes"
   - name: "manage policies"
     type: script
     file: "$SERVICE_PATH/scripts/common/manage_policies"
