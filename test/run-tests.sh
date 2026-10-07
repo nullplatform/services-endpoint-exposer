@@ -51,6 +51,7 @@ TEST_FILES=(
   "test_policy_lifecycle.bats"
   "test_build_rule.bats"
   "test_gateway_baseline.bats"
+  "test_workflow_scripts.bats"
   "test_integration.bats"
 )
 

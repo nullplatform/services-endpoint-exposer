@@ -18,7 +18,7 @@ set -euo pipefail
 if [[ "${_BUILD_RULE_CACHED_SCOPE:-}" == "$SCOPE_ID" && -n "${_BUILD_RULE_CACHED_RULE:-}" ]]; then
   SCOPE_RULE="$_BUILD_RULE_CACHED_RULE"
   echo "Using cached backend for scope_id=$SCOPE_ID: $(echo "$SCOPE_RULE" | jq -c '.blue_green_annotation.forward.targetGroups // .service.name')"
-  return 0 2>/dev/null || exit 0
+  return 0
 fi
 
 SCOPE_JSON=$(np scope read --id "$SCOPE_ID" --format json)

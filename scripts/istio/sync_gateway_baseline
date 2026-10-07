@@ -22,98 +22,104 @@ set -euo pipefail
 #   gateway without hosts, no baseline is kept at all.
 # With no exposer policies left on a gateway, its baseline is removed.
 
-source "$SERVICE_PATH/scripts/istio/config"
+# The body is a function so the early outs can `return`: the np CLI ends the
+# whole workflow when a step script calls `exit 0`, skipping the steps after it.
+main() {
+  source "$SERVICE_PATH/scripts/istio/config"
 
-if [[ "${AUTH_TYPE:-}" != "aws-cognito" ]]; then
-  echo "AUTH_TYPE=${AUTH_TYPE:-} doesn't use Istio ALLOW policies, no baseline needed"
-  exit 0
-fi
-
-GATEWAY_LABEL="gateway.networking.k8s.io/gateway-name"
-REMOVED_HOSTS_FILE="${OUTPUT_DIR:-/nonexistent}/.authz-removed-hosts"
-
-for GATEWAY in "$PUBLIC_GATEWAY_NAME" "$PRIVATE_GATEWAY_NAME"; do
-  BASELINE_NAME="hrac-baseline-$GATEWAY"
-  DONE=false
-
-  for _ in 1 2 3 4 5; do
-    POLICIES=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" -o json)
-
-    # Before apply, also count the policies this run is about to create, so the
-    # baseline already excludes their hosts.
-    if [[ "${BASELINE_INCLUDE_RENDERED:-false}" == "true" && -n "${OUTPUT_DIR:-}" ]]; then
-      RENDERED=$(find "$OUTPUT_DIR" -maxdepth 1 -name 'authorizationpolicy-*.yaml' -exec yq -o=json '.' {} \; | jq -s '.')
-      POLICIES=$(jq -n --argjson a "$POLICIES" --argjson r "${RENDERED:-[]}" '{items: ($a.items + $r)}')
-    fi
-
-    STATE=$(echo "$POLICIES" | jq -c --arg gw "$GATEWAY" --arg label "$GATEWAY_LABEL" --arg baseline "$BASELINE_NAME" '
-      def on_gateway: (.spec.selector.matchLabels[$label] // null) as $g | ($g == $gw or $g == null);
-      def hosts: [.spec.rules[]?.to[]?.operation.hosts[]?];
-      [.items[] | select(on_gateway) | select((.spec.action // "ALLOW") == "ALLOW")] as $allow
-      | {
-          exposer: ([$allow[] | select(.metadata.labels["nullplatform.com/managed-by"] == "http-route-access-control") | hosts[]] | unique),
-          foreign: [$allow[] | select(.metadata.labels["nullplatform.com/managed-by"] | . != "http-route-access-control" and . != "http-route-access-control-baseline")
-                    | select(.metadata.name != $baseline)],
-          baseline: (first($allow[] | select(.metadata.name == $baseline)) // null)
-        }
-      | .foreign_hosts = ([.foreign[] | hosts[]] | unique)
-      | .foreign_gateway_wide = ([.foreign[] | select((hosts | length) == 0)] | length > 0)
-      | .current = ([.baseline.spec.rules[0].to[0].operation.notHosts[]? | sub(":\\*$"; "")] | unique)
-      | .rv = (.baseline.metadata.resourceVersion // "")')
-
-    EXPOSER_HOSTS=$(echo "$STATE" | jq -c '.exposer')
-    RV=$(echo "$STATE" | jq -r '.rv')
-
-    if [[ "$(echo "$EXPOSER_HOSTS" | jq 'length')" -eq 0 || "$(echo "$STATE" | jq -r '.foreign_gateway_wide')" == "true" ]]; then
-      if [[ "$(echo "$STATE" | jq -r '.foreign_gateway_wide')" == "true" ]]; then
-        echo "$GATEWAY has an ALLOW policy of its own for every host: not keeping a baseline (it would widen that policy)"
-      else
-        echo "No exposer policies on $GATEWAY: baseline removed"
-      fi
-      kubectl delete authorizationpolicy "$BASELINE_NAME" -n "$GATEWAY_NAMESPACE" --ignore-not-found
-      DONE=true
-      break
-    fi
-
-    REMOVED='[]'
-    [[ -f "$REMOVED_HOSTS_FILE" ]] && REMOVED=$(jq -R -s -c 'split("\n") | map(select(length > 0)) | unique' "$REMOVED_HOSTS_FILE")
-
-    NOT_HOSTS=$(echo "$STATE" | jq -c --argjson removed "$REMOVED" '
-      ((.current + .exposer) - ($removed - .exposer)) + .foreign_hosts
-      | unique
-      | [.[] | ., . + ":*"]')
-
-    POLICY=$(jq -n --arg name "$BASELINE_NAME" --arg ns "$GATEWAY_NAMESPACE" --arg gw "$GATEWAY" --arg label "$GATEWAY_LABEL" \
-      --argjson not_hosts "$NOT_HOSTS" '{
-        apiVersion: "security.istio.io/v1",
-        kind: "AuthorizationPolicy",
-        metadata: {name: $name, namespace: $ns, labels: {"nullplatform.com/managed-by": "http-route-access-control-baseline"}},
-        spec: {
-          selector: {matchLabels: {($label): $gw}},
-          action: "ALLOW",
-          rules: [{to: [{operation: {notHosts: $not_hosts}}]}]
-        }
-      }')
-
-    if [[ -z "$RV" ]]; then
-      if echo "$POLICY" | kubectl create -f -; then DONE=true; fi
-    else
-      PATCH=$(jq -nc --arg rv "$RV" --argjson not_hosts "$NOT_HOSTS" \
-        '[{op: "test", path: "/metadata/resourceVersion", value: $rv},
-          {op: "replace", path: "/spec/rules", value: [{to: [{operation: {notHosts: $not_hosts}}]}]}]')
-      if kubectl patch authorizationpolicy "$BASELINE_NAME" -n "$GATEWAY_NAMESPACE" --type=json -p="$PATCH"; then DONE=true; fi
-    fi
-
-    if [[ "$DONE" == "true" ]]; then
-      echo "✅ Baseline on $GATEWAY admits every host except $(echo "$NOT_HOSTS" | jq -r '[.[] | select(endswith(":*") | not)] | join(", ")')"
-      break
-    fi
-    echo "$BASELINE_NAME changed concurrently, retrying..."
-    sleep 1
-  done
-
-  if [[ "$DONE" != "true" ]]; then
-    echo "ERROR: could not update $BASELINE_NAME"
-    exit 1
+  if [[ "${AUTH_TYPE:-}" != "aws-cognito" ]]; then
+    echo "AUTH_TYPE=${AUTH_TYPE:-} doesn't use Istio ALLOW policies, no baseline needed"
+    return 0
   fi
-done
+
+  GATEWAY_LABEL="gateway.networking.k8s.io/gateway-name"
+  REMOVED_HOSTS_FILE="${OUTPUT_DIR:-/nonexistent}/.authz-removed-hosts"
+
+  for GATEWAY in "$PUBLIC_GATEWAY_NAME" "$PRIVATE_GATEWAY_NAME"; do
+    BASELINE_NAME="hrac-baseline-$GATEWAY"
+    DONE=false
+
+    for _ in 1 2 3 4 5; do
+      POLICIES=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" -o json)
+
+      # Before apply, also count the policies this run is about to create, so the
+      # baseline already excludes their hosts.
+      if [[ "${BASELINE_INCLUDE_RENDERED:-false}" == "true" && -n "${OUTPUT_DIR:-}" ]]; then
+        RENDERED=$(find "$OUTPUT_DIR" -maxdepth 1 -name 'authorizationpolicy-*.yaml' -exec yq -o=json '.' {} \; | jq -s '.')
+        POLICIES=$(jq -n --argjson a "$POLICIES" --argjson r "${RENDERED:-[]}" '{items: ($a.items + $r)}')
+      fi
+
+      STATE=$(echo "$POLICIES" | jq -c --arg gw "$GATEWAY" --arg label "$GATEWAY_LABEL" --arg baseline "$BASELINE_NAME" '
+        def on_gateway: (.spec.selector.matchLabels[$label] // null) as $g | ($g == $gw or $g == null);
+        def hosts: [.spec.rules[]?.to[]?.operation.hosts[]?];
+        [.items[] | select(on_gateway) | select((.spec.action // "ALLOW") == "ALLOW")] as $allow
+        | {
+            exposer: ([$allow[] | select(.metadata.labels["nullplatform.com/managed-by"] == "http-route-access-control") | hosts[]] | unique),
+            foreign: [$allow[] | select(.metadata.labels["nullplatform.com/managed-by"] | . != "http-route-access-control" and . != "http-route-access-control-baseline")
+                      | select(.metadata.name != $baseline)],
+            baseline: (first($allow[] | select(.metadata.name == $baseline)) // null)
+          }
+        | .foreign_hosts = ([.foreign[] | hosts[]] | unique)
+        | .foreign_gateway_wide = ([.foreign[] | select((hosts | length) == 0)] | length > 0)
+        | .current = ([.baseline.spec.rules[0].to[0].operation.notHosts[]? | sub(":\\*$"; "")] | unique)
+        | .rv = (.baseline.metadata.resourceVersion // "")')
+
+      EXPOSER_HOSTS=$(echo "$STATE" | jq -c '.exposer')
+      RV=$(echo "$STATE" | jq -r '.rv')
+
+      if [[ "$(echo "$EXPOSER_HOSTS" | jq 'length')" -eq 0 || "$(echo "$STATE" | jq -r '.foreign_gateway_wide')" == "true" ]]; then
+        if [[ "$(echo "$STATE" | jq -r '.foreign_gateway_wide')" == "true" ]]; then
+          echo "$GATEWAY has an ALLOW policy of its own for every host: not keeping a baseline (it would widen that policy)"
+        else
+          echo "No exposer policies on $GATEWAY: baseline removed"
+        fi
+        kubectl delete authorizationpolicy "$BASELINE_NAME" -n "$GATEWAY_NAMESPACE" --ignore-not-found
+        DONE=true
+        break
+      fi
+
+      REMOVED='[]'
+      [[ -f "$REMOVED_HOSTS_FILE" ]] && REMOVED=$(jq -R -s -c 'split("\n") | map(select(length > 0)) | unique' "$REMOVED_HOSTS_FILE")
+
+      NOT_HOSTS=$(echo "$STATE" | jq -c --argjson removed "$REMOVED" '
+        ((.current + .exposer) - ($removed - .exposer)) + .foreign_hosts
+        | unique
+        | [.[] | ., . + ":*"]')
+
+      POLICY=$(jq -n --arg name "$BASELINE_NAME" --arg ns "$GATEWAY_NAMESPACE" --arg gw "$GATEWAY" --arg label "$GATEWAY_LABEL" \
+        --argjson not_hosts "$NOT_HOSTS" '{
+          apiVersion: "security.istio.io/v1",
+          kind: "AuthorizationPolicy",
+          metadata: {name: $name, namespace: $ns, labels: {"nullplatform.com/managed-by": "http-route-access-control-baseline"}},
+          spec: {
+            selector: {matchLabels: {($label): $gw}},
+            action: "ALLOW",
+            rules: [{to: [{operation: {notHosts: $not_hosts}}]}]
+          }
+        }')
+
+      if [[ -z "$RV" ]]; then
+        if echo "$POLICY" | kubectl create -f -; then DONE=true; fi
+      else
+        PATCH=$(jq -nc --arg rv "$RV" --argjson not_hosts "$NOT_HOSTS" \
+          '[{op: "test", path: "/metadata/resourceVersion", value: $rv},
+            {op: "replace", path: "/spec/rules", value: [{to: [{operation: {notHosts: $not_hosts}}]}]}]')
+        if kubectl patch authorizationpolicy "$BASELINE_NAME" -n "$GATEWAY_NAMESPACE" --type=json -p="$PATCH"; then DONE=true; fi
+      fi
+
+      if [[ "$DONE" == "true" ]]; then
+        echo "✅ Baseline on $GATEWAY admits every host except $(echo "$NOT_HOSTS" | jq -r '[.[] | select(endswith(":*") | not)] | join(", ")')"
+        break
+      fi
+      echo "$BASELINE_NAME changed concurrently, retrying..."
+      sleep 1
+    done
+
+    if [[ "$DONE" != "true" ]]; then
+      echo "ERROR: could not update $BASELINE_NAME"
+      exit 1
+    fi
+  done
+}
+
+main "$@"

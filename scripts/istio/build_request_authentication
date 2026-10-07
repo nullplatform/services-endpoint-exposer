@@ -2,99 +2,105 @@
 
 set -euo pipefail
 
-source "$SERVICE_PATH/scripts/istio/config"
+# The body is a function so the early outs can `return`: the np CLI ends the
+# whole workflow when a step script calls `exit 0`, skipping the steps after it.
+main() {
+  source "$SERVICE_PATH/scripts/istio/config"
 
-echo "=== Building Cognito RequestAuthentication ==="
+  echo "=== Building Cognito RequestAuthentication ==="
 
-if [[ -z "${COGNITO_USER_POOL_ARN:-}" || "$COGNITO_USER_POOL_ARN" == "null" || "$COGNITO_USER_POOL_ARN" == "" ]]; then
-  echo "No COGNITO_USER_POOL_ARN set, skipping RequestAuthentication generation"
-  return 0 2>/dev/null || exit 0
-fi
-
-# Derive issuer and jwks_uri from ARN
-# Format: arn:aws:cognito-idp:REGION:ACCOUNT:userpool/POOL_ID
-REGION=$(echo "$COGNITO_USER_POOL_ARN" | cut -d':' -f4)
-POOL_ID=$(echo "$COGNITO_USER_POOL_ARN" | cut -d'/' -f2)
-ISSUER="https://cognito-idp.${REGION}.amazonaws.com/${POOL_ID}"
-JWKS_URI="${ISSUER}/.well-known/jwks.json"
-
-echo "Pool ID: $POOL_ID"
-echo "Issuer:  $ISSUER"
-
-TEMPLATE="$SERVICE_PATH/templates/istio/request-authentication.yaml.tpl"
-
-for SUFFIX in public private; do
-  if [[ "$SUFFIX" == "public" ]]; then
-    GATEWAY_NAME="$PUBLIC_GATEWAY_NAME"
-  else
-    GATEWAY_NAME="$PRIVATE_GATEWAY_NAME"
+  if [[ -z "${COGNITO_USER_POOL_ARN:-}" || "$COGNITO_USER_POOL_ARN" == "null" || "$COGNITO_USER_POOL_ARN" == "" ]]; then
+    echo "No COGNITO_USER_POOL_ARN set, skipping RequestAuthentication generation"
+    return 0
   fi
 
-  RA_NAME="cognito-jwt-${SUFFIX}"
-  OUTPUT_FILE="$OUTPUT_DIR/request-authentication-${SUFFIX}.yaml"
+  # Derive issuer and jwks_uri from ARN
+  # Format: arn:aws:cognito-idp:REGION:ACCOUNT:userpool/POOL_ID
+  REGION=$(echo "$COGNITO_USER_POOL_ARN" | cut -d':' -f4)
+  POOL_ID=$(echo "$COGNITO_USER_POOL_ARN" | cut -d'/' -f2)
+  ISSUER="https://cognito-idp.${REGION}.amazonaws.com/${POOL_ID}"
+  JWKS_URI="${ISSUER}/.well-known/jwks.json"
 
-  # The RequestAuthentication is shared by every exposer on the gateway (one
-  # jwtRule per Cognito pool). Create it or merge this issuer into it right
-  # away, guarded by resourceVersion, so two services acting at once can't
-  # overwrite each other's issuer. Idempotent: create.yaml runs it again after
-  # apply in case a concurrent delete removed the issuer meanwhile.
-  RA_DONE=false
-  for _ in 1 2 3 4 5; do
-    EXISTING=$(kubectl get requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" -o json 2>/dev/null || echo "")
+  echo "Pool ID: $POOL_ID"
+  echo "Issuer:  $ISSUER"
 
-    if [[ -z "$EXISTING" ]]; then
-      CONTEXT_FILE="$OUTPUT_DIR/request-authentication-${SUFFIX}-ctx.json"
-      jq -n \
-        --arg suffix            "$SUFFIX" \
-        --arg gateway_name      "$GATEWAY_NAME" \
-        --arg gateway_namespace "$GATEWAY_NAMESPACE" \
-        --arg issuer            "$ISSUER" \
-        --arg jwks_uri          "$JWKS_URI" \
-        --arg cookie_name       "${COGNITO_TOKEN_COOKIE_NAME:-}" \
-        '{suffix: $suffix, gateway_name: $gateway_name, gateway_namespace: $gateway_namespace,
-          issuer: $issuer, jwks_uri: $jwks_uri, cookie_name: $cookie_name}' \
-        > "$CONTEXT_FILE"
-      gomplate -c ".=$CONTEXT_FILE" -f "$TEMPLATE" -o "$OUTPUT_FILE.tmp"
-      rm "$CONTEXT_FILE"
-      if kubectl create -f "$OUTPUT_FILE.tmp"; then
-        rm "$OUTPUT_FILE.tmp"
-        echo "✅ RequestAuthentication created: $RA_NAME (gateway: ${GATEWAY_NAME})"
+  TEMPLATE="$SERVICE_PATH/templates/istio/request-authentication.yaml.tpl"
+
+  for SUFFIX in public private; do
+    if [[ "$SUFFIX" == "public" ]]; then
+      GATEWAY_NAME="$PUBLIC_GATEWAY_NAME"
+    else
+      GATEWAY_NAME="$PRIVATE_GATEWAY_NAME"
+    fi
+
+    RA_NAME="cognito-jwt-${SUFFIX}"
+    OUTPUT_FILE="$OUTPUT_DIR/request-authentication-${SUFFIX}.yaml"
+
+    # The RequestAuthentication is shared by every exposer on the gateway (one
+    # jwtRule per Cognito pool). Create it or merge this issuer into it right
+    # away, guarded by resourceVersion, so two services acting at once can't
+    # overwrite each other's issuer. Idempotent: create.yaml runs it again after
+    # apply in case a concurrent delete removed the issuer meanwhile.
+    RA_DONE=false
+    for _ in 1 2 3 4 5; do
+      EXISTING=$(kubectl get requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" -o json 2>/dev/null || echo "")
+
+      if [[ -z "$EXISTING" ]]; then
+        CONTEXT_FILE="$OUTPUT_DIR/request-authentication-${SUFFIX}-ctx.json"
+        jq -n \
+          --arg suffix            "$SUFFIX" \
+          --arg gateway_name      "$GATEWAY_NAME" \
+          --arg gateway_namespace "$GATEWAY_NAMESPACE" \
+          --arg issuer            "$ISSUER" \
+          --arg jwks_uri          "$JWKS_URI" \
+          --arg cookie_name       "${COGNITO_TOKEN_COOKIE_NAME:-}" \
+          '{suffix: $suffix, gateway_name: $gateway_name, gateway_namespace: $gateway_namespace,
+            issuer: $issuer, jwks_uri: $jwks_uri, cookie_name: $cookie_name}' \
+          > "$CONTEXT_FILE"
+        gomplate -c ".=$CONTEXT_FILE" -f "$TEMPLATE" -o "$OUTPUT_FILE.tmp"
+        rm "$CONTEXT_FILE"
+        if kubectl create -f "$OUTPUT_FILE.tmp"; then
+          rm "$OUTPUT_FILE.tmp"
+          echo "✅ RequestAuthentication created: $RA_NAME (gateway: ${GATEWAY_NAME})"
+          RA_DONE=true
+          break
+        fi
+        rm -f "$OUTPUT_FILE.tmp"
+        echo "Creating $RA_NAME failed (created concurrently?), retrying..."
+        sleep 1
+        continue
+      fi
+
+      if [[ "$(echo "$EXISTING" | jq -r --arg issuer "$ISSUER" '[.spec.jwtRules[]?.issuer] | index($issuer) != null')" == "true" ]]; then
+        echo "ℹ️  $RA_NAME already has issuer $ISSUER"
         RA_DONE=true
         break
       fi
-      rm -f "$OUTPUT_FILE.tmp"
-      echo "Creating $RA_NAME failed (created concurrently?), retrying..."
+
+      PATCH=$(echo "$EXISTING" | jq -c \
+        --arg issuer "$ISSUER" \
+        --arg jwks_uri "$JWKS_URI" \
+        --arg cookie_name "${COGNITO_TOKEN_COOKIE_NAME:-}" \
+        '[{op: "test", path: "/metadata/resourceVersion", value: .metadata.resourceVersion},
+          {op: "replace", path: "/spec/jwtRules", value: ((.spec.jwtRules // []) + [
+            {issuer: $issuer, jwksUri: $jwks_uri}
+            + (if $cookie_name != "" then {fromCookies: [$cookie_name]} else {} end)])}]')
+      if kubectl patch requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" --type=json -p="$PATCH"; then
+        echo "✅ Merged issuer $ISSUER into $RA_NAME"
+        RA_DONE=true
+        break
+      fi
+      echo "$RA_NAME changed while merging, retrying..."
       sleep 1
-      continue
-    fi
+    done
 
-    if [[ "$(echo "$EXISTING" | jq -r --arg issuer "$ISSUER" '[.spec.jwtRules[]?.issuer] | index($issuer) != null')" == "true" ]]; then
-      echo "ℹ️  $RA_NAME already has issuer $ISSUER"
-      RA_DONE=true
-      break
+    if [[ "$RA_DONE" != "true" ]]; then
+      echo "ERROR: could not create or update $RA_NAME"
+      exit 1
     fi
-
-    PATCH=$(echo "$EXISTING" | jq -c \
-      --arg issuer "$ISSUER" \
-      --arg jwks_uri "$JWKS_URI" \
-      --arg cookie_name "${COGNITO_TOKEN_COOKIE_NAME:-}" \
-      '[{op: "test", path: "/metadata/resourceVersion", value: .metadata.resourceVersion},
-        {op: "replace", path: "/spec/jwtRules", value: ((.spec.jwtRules // []) + [
-          {issuer: $issuer, jwksUri: $jwks_uri}
-          + (if $cookie_name != "" then {fromCookies: [$cookie_name]} else {} end)])}]')
-    if kubectl patch requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" --type=json -p="$PATCH"; then
-      echo "✅ Merged issuer $ISSUER into $RA_NAME"
-      RA_DONE=true
-      break
-    fi
-    echo "$RA_NAME changed while merging, retrying..."
-    sleep 1
   done
 
-  if [[ "$RA_DONE" != "true" ]]; then
-    echo "ERROR: could not create or update $RA_NAME"
-    exit 1
-  fi
-done
+  echo "=== RequestAuthentication complete ==="
+}
 
-echo "=== RequestAuthentication complete ==="
+main "$@"

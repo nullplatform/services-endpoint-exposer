@@ -24,7 +24,7 @@ EXPECTED_POLICIES_FILE="$OUTPUT_DIR/.authz-expected"
 NUM_ROUTES=$(echo "$ROUTES_JSON" | jq 'length')
 if [[ "$NUM_ROUTES" -eq 0 ]]; then
   echo "No routes configured, skipping AuthorizationPolicy generation"
-  return 0 2>/dev/null || exit 0
+  return 0
 fi
 
 SCOPES_JSON=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --all --format json | jq '.results // []')
