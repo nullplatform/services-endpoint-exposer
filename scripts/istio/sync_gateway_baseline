@@ -1,0 +1,69 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Keeps traffic that the exposer doesn't manage flowing through the gateways.
+#
+# The exposer's ALLOW AuthorizationPolicies select the whole gateway, and once
+# a workload has any ALLOW policy Istio denies every request no ALLOW matches.
+# Without this, the first exposer in a cluster turned every other application
+# on the same gateway into 403s. For each gateway this keeps one extra ALLOW
+# policy that admits requests to every host the exposer doesn't manage
+# (notHosts). Hosts the exposer manages keep their behaviour: declared routes
+# need their groups, everything else on them is denied.
+#
+# Recomputed from all of the exposer's policies in the cluster on every create,
+# update and delete; removed when a gateway has no exposer policies left.
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+if [[ "${AUTH_TYPE:-}" != "aws-cognito" ]]; then
+  echo "AUTH_TYPE=${AUTH_TYPE:-} doesn't use Istio ALLOW policies, no baseline needed"
+  exit 0
+fi
+
+ALL_POLICIES=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" \
+  -l "nullplatform.com/managed-by=http-route-access-control" -o json)
+
+# Before apply, also count the policies this run is about to create, so the
+# baseline already excludes their hosts and other hosts never lose access.
+if [[ "${BASELINE_INCLUDE_RENDERED:-false}" == "true" && -n "${OUTPUT_DIR:-}" ]]; then
+  RENDERED=$(find "$OUTPUT_DIR" -maxdepth 1 -name 'authorizationpolicy-*.yaml' -exec yq -o=json '.' {} \; | jq -s '.')
+  ALL_POLICIES=$(jq -n --argjson a "$ALL_POLICIES" --argjson r "${RENDERED:-[]}" '{items: ($a.items + $r)}')
+fi
+
+for GATEWAY in "$PUBLIC_GATEWAY_NAME" "$PRIVATE_GATEWAY_NAME"; do
+  BASELINE_NAME="hrac-baseline-$GATEWAY"
+
+  HOSTS=$(echo "$ALL_POLICIES" | jq -c --arg gw "$GATEWAY" '
+    [.items[]
+      | select(.spec.selector.matchLabels["gateway.networking.k8s.io/gateway-name"] == $gw)
+      | .spec.rules[]?.to[]?.operation.hosts[]?]
+    | unique')
+
+  if [[ "$(echo "$HOSTS" | jq 'length')" -eq 0 ]]; then
+    kubectl delete authorizationpolicy "$BASELINE_NAME" -n "$GATEWAY_NAMESPACE" --ignore-not-found
+    echo "No exposer policies on $GATEWAY: baseline removed"
+    continue
+  fi
+
+  # Host matching sees the Host header, which may carry a port.
+  NOT_HOSTS=$(echo "$HOSTS" | jq -c '[.[] | ., . + ":*"]')
+
+  jq -n --arg name "$BASELINE_NAME" --arg ns "$GATEWAY_NAMESPACE" --arg gw "$GATEWAY" --argjson not_hosts "$NOT_HOSTS" '{
+    apiVersion: "security.istio.io/v1",
+    kind: "AuthorizationPolicy",
+    metadata: {
+      name: $name,
+      namespace: $ns,
+      labels: {"nullplatform.com/managed-by": "http-route-access-control-baseline"}
+    },
+    spec: {
+      selector: {matchLabels: {"gateway.networking.k8s.io/gateway-name": $gw}},
+      action: "ALLOW",
+      rules: [{to: [{operation: {notHosts: $not_hosts}}]}]
+    }
+  }' | kubectl apply -f -
+
+  echo "✅ Baseline on $GATEWAY admits every host except $(echo "$HOSTS" | jq -r 'join(", ")')"
+done

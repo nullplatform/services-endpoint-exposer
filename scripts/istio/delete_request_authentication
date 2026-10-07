@@ -8,7 +8,7 @@ echo "=== Cleaning up RequestAuthentication ==="
 
 if [[ -z "${COGNITO_USER_POOL_ARN:-}" || "$COGNITO_USER_POOL_ARN" == "null" || "$COGNITO_USER_POOL_ARN" == "" ]]; then
   echo "No COGNITO_USER_POOL_ARN set, skipping RequestAuthentication cleanup"
-  exit 0
+  return 0 2>/dev/null || exit 0
 fi
 
 REGION=$(echo "$COGNITO_USER_POOL_ARN" | cut -d':' -f4)
@@ -27,7 +27,7 @@ OTHER_ACTIVE_SERVICES=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" 
 
 if [[ "$OTHER_ACTIVE_SERVICES" -gt 0 ]]; then
   echo "ℹ️  $OTHER_ACTIVE_SERVICES other service(s) still active — keeping RequestAuthentication"
-  exit 0
+  return 0 2>/dev/null || exit 0
 fi
 
 echo "No other active services found — proceeding with issuer removal"
@@ -64,7 +64,8 @@ for SUFFIX in public private; do
     # Other issuers remain → patch to remove only this one
     kubectl patch requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" \
       --type=json \
-      -p="$(echo "$REMAINING_RULES" | jq '[{op: "replace", path: "/spec/jwtRules", value: .}]')"
+      -p="$(echo "$REMAINING_RULES" | jq --arg rv "$(echo "$EXISTING" | jq -r .metadata.resourceVersion)" \
+        '[{op: "test", path: "/metadata/resourceVersion", value: $rv}, {op: "replace", path: "/spec/jwtRules", value: .}]')"
     echo "✅ Removed issuer from $RA_NAME ($REMAINING_COUNT issuer(s) remaining)"
   fi
 done

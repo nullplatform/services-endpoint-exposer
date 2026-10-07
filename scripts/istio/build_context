@@ -31,15 +31,23 @@ ROUTES_JSON=$(echo "$CONTEXT" | jq -c '
   .service.attributes.routes //
   []')
 
-# Resolve scope → visibility for each route (external → "public", internal → "internal")
+# Resolve each route's visibility from its scope, every time: the spec has no
+# visibility field, and the value stored in the service attributes (written by
+# update_service_results, sent back by the deploy sync) can be stale. Scopes
+# carry it in capabilities.visibility ("public"/"private"); older scope types
+# used service.attributes.visibility ("external"/"internal"). Private routes
+# go to the private gateway ("internal" downstream).
 if [[ "$(echo "$ROUTES_JSON" | jq 'length')" -gt 0 && -n "$APPLICATION_ID" ]]; then
-  SCOPES_LIST=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq '.results // []')
+  SCOPES_LIST=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --all --format json | jq '.results // []')
   ROUTES_JSON=$(echo "$ROUTES_JSON" | jq -c --argjson scopes "$SCOPES_LIST" '
     map(. as $route |
-      if .visibility == null or .visibility == "" then
-        (($scopes[] | select(.slug == $route.scope) | .service.attributes.visibility // "external") // "external") as $vis |
-        $route + {visibility: (if $vis == "internal" then "internal" else "public" end)}
-      else . end
+      ([$scopes[] | select(.slug == $route.scope)][0]) as $scope |
+      if $scope == null then
+        $route + {visibility: ($route.visibility // "public")}
+      else
+        ($scope.capabilities.visibility // $scope.service.attributes.visibility // "public") as $vis |
+        $route + {visibility: (if ($vis == "private" or $vis == "internal") then "internal" else "public" end)}
+      end
     )')
 fi
 
@@ -81,6 +89,7 @@ case "$AUTH_TYPE" in
 esac
 AVP_POLICY_STORE_ID=$(echo "$AVP_POLICY_STORE_ARN" | cut -d'/' -f2)
 
+export K8S_NAMESPACE
 export SERVICE_ID
 export SERVICE_SLUG
 export ACTION_ID

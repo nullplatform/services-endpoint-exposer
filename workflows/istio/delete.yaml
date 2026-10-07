@@ -15,18 +15,27 @@ steps:
         type: environment
       - name: ACTION_ID
         type: environment
+      - name: K8S_NAMESPACE
+        type: environment
       - name: AUTH_TYPE
+        type: environment
+      - name: COGNITO_USER_POOL_ARN
         type: environment
       - name: AVP_POLICY_STORE_ID
         type: environment
-  - name: "manage policies"
-    type: script
-    file: "$SERVICE_PATH/scripts/common/manage_policies"
-    configuration:
-      ACTION: "delete"
+  # HTTPRoutes go first: deleting the policies while the routes still exist
+  # leaves the routes without their ALLOW policies.
   - name: apply
     type: script
     file: "$SERVICE_PATH/scripts/common/apply"
     configuration:
       ACTION: delete
       DRY_RUN: false
+  - name: "manage policies"
+    type: script
+    file: "$SERVICE_PATH/scripts/common/manage_policies"
+    configuration:
+      ACTION: "delete"
+  - name: "sync gateway baseline"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"

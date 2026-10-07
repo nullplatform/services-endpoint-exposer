@@ -2,178 +2,152 @@
 
 load helpers
 
+# build_httproute renders one HTTPRoute per scope from the routes of one
+# visibility. np and kubectl are mocked; gomplate, yq and jq are real.
+
 setup() {
-  # Call parent setup
   export TEST_TEMP_DIR="$(mktemp -d)"
   export OUTPUT_DIR="$TEST_TEMP_DIR/output"
   mkdir -p "$OUTPUT_DIR"
   export SERVICE_PATH="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
-
-  # Load assert functions
   load_bats_support_libraries
 
-  # Mock kubectl and provider data
-  export K8S_NAMESPACE="test-namespace"
-  export ALB_NAME="test-alb"
+  export SERVICE_ID="svc-1"
+  export SERVICE_SLUG="api"
+  export APPLICATION_ID="4"
+  export K8S_NAMESPACE="nullplatform"
+  export VISIBILITY="public"
+  export PRIVATE_ROUTES_JSON='[]'
 
-  # Mock gomplate
-  cat > "$TEST_TEMP_DIR/gomplate" << 'EOF'
+  # Scope 10 has a deployment (service d-10-100), scope 20 doesn't.
+  export NP_SCOPES='[{"id": 10, "slug": "prod", "domain": "prod.example.com"},
+                     {"id": 20, "slug": "staging", "domain": "staging.example.com"}]'
+  export K8S_SERVICES='{"items": [{"metadata": {"name": "d-10-100"},
+    "spec": {"selector": {"scope_id": "10", "deployment_id": "100"}, "ports": [{"port": 8080}]}}]}'
+
+  cat > "$TEST_TEMP_DIR/np" << 'EOF'
 #!/bin/bash
-# Simple gomplate mock - just copy template to output
-TEMPLATE_FILE=""
-OUTPUT_FILE=""
-
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    -f) TEMPLATE_FILE="$2"; shift 2 ;;
-    -o) OUTPUT_FILE="$2"; shift 2 ;;
-    -c) shift 2 ;; # Ignore context
-    *) shift ;;
-  esac
-done
-
-if [[ -n "$TEMPLATE_FILE" ]] && [[ -n "$OUTPUT_FILE" ]]; then
-  # For testing, just create a valid YAML with the service info
-  cat > "$OUTPUT_FILE" << YAML
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: ${SERVICE_SLUG}-${SERVICE_ID}-${SUFFIX:-public}
-  namespace: ${K8S_NAMESPACE}
-spec:
-  hostnames:
-  - ${DOMAIN}
-YAML
-fi
+case "$1 $2" in
+  "scope list") echo "{\"results\": $NP_SCOPES}" ;;
+  "scope read")
+    id=$(echo "$*" | sed -E 's/.*--id ([0-9]+).*/\1/')
+    echo "$NP_SCOPES" | jq --argjson id "$id" 'first(.[] | select(.id == $id)) + {active_deployment: (if $id == 10 then 100 else null end), in_progress_deployment: null}' ;;
+esac
 EOF
-  chmod +x "$TEST_TEMP_DIR/gomplate"
-  export PATH="$TEST_TEMP_DIR:$PATH"
-
-  # Mock process_routes script
-  if [[ ! -f "$SERVICE_PATH/scripts/istio/process_routes.bak" ]]; then
-    if [[ -f "$SERVICE_PATH/scripts/istio/process_routes" ]]; then
-      cp "$SERVICE_PATH/scripts/istio/process_routes" "$SERVICE_PATH/scripts/istio/process_routes.bak"
-    fi
-  fi
-  cat > "$SERVICE_PATH/scripts/istio/process_routes" << 'MOCKEOF'
+  cat > "$TEST_TEMP_DIR/kubectl" << 'EOF'
 #!/bin/bash
-# Mock - does nothing
-# Use return instead of exit so it doesn't exit the sourcing shell
-return 0 2>/dev/null || true
-MOCKEOF
-  chmod +x "$SERVICE_PATH/scripts/istio/process_routes"
+echo "$K8S_SERVICES"
+EOF
+  chmod +x "$TEST_TEMP_DIR/np" "$TEST_TEMP_DIR/kubectl"
+  export PATH="$TEST_TEMP_DIR:$PATH"
 }
 
-teardown() {
-  # Always restore original process_routes if backup exists
-  if [[ -f "$SERVICE_PATH/scripts/istio/process_routes.bak" ]]; then
-    mv -f "$SERVICE_PATH/scripts/istio/process_routes.bak" "$SERVICE_PATH/scripts/istio/process_routes"
-  fi
+teardown() { rm -rf "$TEST_TEMP_DIR"; }
 
-  # Clean up temp directory
-  if [[ -n "$TEST_TEMP_DIR" ]] && [[ -d "$TEST_TEMP_DIR" ]]; then
-    rm -rf "$TEST_TEMP_DIR"
-  fi
-}
+route_file() { echo "$OUTPUT_DIR/httproute-svc-1-$1.yaml"; }
 
-@test "build_httproute: generates public HTTPRoute with routes" {
-  export CONTEXT=$(load_fixture "simple-public-routes")
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  export VISIBILITY="public"
+@test "build_httproute: one HTTPRoute per scope, each with only its own domain" {
+  export PUBLIC_ROUTES_JSON='[
+    {"methods": ["GET"], "path": "/health", "scope": "prod",    "groups": ["admin"]},
+    {"methods": ["GET"], "path": "/health", "scope": "staging", "groups": ["admin"]}
+  ]'
+  export ROUTES_JSON="$PUBLIC_ROUTES_JSON"
 
   run bash "$SERVICE_PATH/scripts/istio/build_httproute"
 
   assert_success
-  assert_file_exists "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-public.yaml"
+  [[ "$(yq -o=json '.spec.hostnames' "$(route_file public-10)" | jq -c .)" == '["prod.example.com"]' ]]
+  [[ "$(yq -o=json '.spec.hostnames' "$(route_file public-20)" | jq -c .)" == '["staging.example.com"]' ]]
+  [[ "$(yq '.metadata.name' "$(route_file public-10)")" == "api-svc-1-public-10" ]]
+  [[ "$(sort "$OUTPUT_DIR/.httproute-expected" | tr '\n' ' ')" == "api-svc-1-public-10 api-svc-1-public-20 " ]]
 }
 
-@test "build_httproute: generates private HTTPRoute with routes" {
-  export CONTEXT=$(load_fixture "public-and-private-routes")
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  export VISIBILITY="private"
+@test "build_httproute: every route x method of a scope is a match of one rule" {
+  export PUBLIC_ROUTES_JSON='[
+    {"methods": ["GET", "POST"], "path": "/orders",  "scope": "prod", "groups": ["admin"]},
+    {"methods": ["GET"],         "path": "/health",  "scope": "prod", "groups": ["admin"]}
+  ]'
+  export ROUTES_JSON="$PUBLIC_ROUTES_JSON"
 
   run bash "$SERVICE_PATH/scripts/istio/build_httproute"
 
   assert_success
-  assert_file_exists "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-private.yaml"
+  rules=$(yq -o=json '.spec.rules' "$(route_file public-10)")
+  [[ "$(echo "$rules" | jq length)" == "1" ]]
+  [[ "$(echo "$rules" | jq -c '[.[0].matches[] | "\(.method) \(.path.type) \(.path.value)"] | sort')" == \
+     '["GET Exact /health","GET Exact /orders","POST Exact /orders"]' ]]
+  [[ "$(echo "$rules" | jq -c '.[0].backendRefs')" == '[{"name":"d-10-100","port":8080}]' ]]
 }
 
-@test "build_httproute: creates marker file when no public routes" {
-  export CONTEXT=$(load_fixture "no-public-routes")
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  export VISIBILITY="public"
+@test "build_httproute: parameters and wildcards become regex and prefix matches" {
+  export PUBLIC_ROUTES_JSON='[
+    {"methods": ["GET"], "path": "/items/{id}", "scope": "prod", "groups": ["admin"]},
+    {"methods": ["GET"], "path": "/users/:id",  "scope": "prod", "groups": ["admin"]},
+    {"methods": ["GET"], "path": "/api/*",      "scope": "prod", "groups": ["admin"]},
+    {"methods": ["GET"], "path": "/api",        "scope": "prod", "groups": ["admin"]}
+  ]'
+  export ROUTES_JSON="$PUBLIC_ROUTES_JSON"
 
   run bash "$SERVICE_PATH/scripts/istio/build_httproute"
 
   assert_success
-  assert_file_not_exists "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-public.yaml"
+  [[ "$(yq -o=json '.spec.rules[0].matches' "$(route_file public-10)" | jq -c '[.[] | "\(.path.type) \(.path.value)"] | sort')" == \
+     '["Exact /api","PathPrefix /api","RegularExpression /items/[^/]+","RegularExpression /users/[^/]+"]' ]]
+}
+
+@test "build_httproute: a scope without a deployment gets rules without backends (404)" {
+  export PUBLIC_ROUTES_JSON='[{"methods": ["GET"], "path": "/health", "scope": "staging", "groups": ["admin"]}]'
+  export ROUTES_JSON="$PUBLIC_ROUTES_JSON"
+
+  run bash "$SERVICE_PATH/scripts/istio/build_httproute"
+
+  assert_success
+  [[ "$(yq -o=json '.spec.rules' "$(route_file public-20)" | jq -c '[.[] | has("backendRefs")]')" == '[false]' ]]
+}
+
+@test "build_httproute: unsupported wildcards are skipped with a warning" {
+  export PUBLIC_ROUTES_JSON='[
+    {"methods": ["GET"], "path": "/x*/y",   "scope": "prod", "groups": ["admin"]},
+    {"methods": ["GET"], "path": "/health", "scope": "prod", "groups": ["admin"]}
+  ]'
+  export ROUTES_JSON="$PUBLIC_ROUTES_JSON"
+
+  run bash "$SERVICE_PATH/scripts/istio/build_httproute"
+
+  assert_success
+  assert_output --partial "WARNING: skipping route: unsupported wildcard in /x*/y"
+  [[ "$(yq '.spec.rules[0].matches | length' "$(route_file public-10)")" == "1" ]]
+}
+
+@test "build_httproute: more than 64 matches are split across rules" {
+  export PUBLIC_ROUTES_JSON=$(jq -nc '[range(0; 70) | {methods: ["GET"], path: "/p\(.)", scope: "prod", groups: ["admin"]}]')
+  export ROUTES_JSON="$PUBLIC_ROUTES_JSON"
+
+  run bash "$SERVICE_PATH/scripts/istio/build_httproute"
+
+  assert_success
+  [[ "$(yq -o=json '.spec.rules' "$(route_file public-10)" | jq -c '[.[] | .matches | length]')" == '[64,6]' ]]
+}
+
+@test "build_httproute: no routes leaves a marker so earlier HTTPRoutes are removed" {
+  export PUBLIC_ROUTES_JSON='[]'
+  export ROUTES_JSON='[]'
+
+  run bash "$SERVICE_PATH/scripts/istio/build_httproute"
+
+  assert_success
   assert_file_exists "$OUTPUT_DIR/.httproute-public-deleted"
+  assert_file_exists "$OUTPUT_DIR/.httproute-expected"
 }
 
-@test "build_httproute: creates marker file when no public domain" {
-  export CONTEXT='{
-    "service": {"id": "test-id", "slug": "test"},
-    "parameters": {"publicDomain": "", "privateDomain": "private.test.com"},
-    "routes": [{"path": "/test", "method": "GET", "scope": "test", "visibility": "public"}]
-  }'
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  export VISIBILITY="public"
+@test "build_httproute: private routes attach to the private gateway" {
+  export VISIBILITY="private"
+  export PUBLIC_ROUTES_JSON='[]'
+  export PRIVATE_ROUTES_JSON='[{"methods": ["GET"], "path": "/internal", "scope": "prod", "groups": ["admin"]}]'
+  export ROUTES_JSON="$PRIVATE_ROUTES_JSON"
 
   run bash "$SERVICE_PATH/scripts/istio/build_httproute"
 
   assert_success
-  assert_file_not_exists "$OUTPUT_DIR/httproute-test-id-public.yaml"
-  assert_file_exists "$OUTPUT_DIR/.httproute-public-deleted"
-}
-
-@test "build_httproute: creates marker file when no private routes" {
-  export CONTEXT=$(load_fixture "simple-public-routes")
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  export VISIBILITY="private"
-
-  run bash "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  assert_success
-  assert_file_not_exists "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-private.yaml"
-  assert_file_exists "$OUTPUT_DIR/.httproute-private-deleted"
-}
-
-@test "build_httproute: fails with invalid visibility" {
-  export CONTEXT=$(load_fixture "simple-public-routes")
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  export VISIBILITY="invalid"
-
-  run bash "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  assert_failure
-}
-
-@test "build_httproute: exports HTTPROUTE_PUBLIC_FILE for public" {
-  export CONTEXT=$(load_fixture "simple-public-routes")
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  export VISIBILITY="public"
-
-  source "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  [[ -n "$HTTPROUTE_PUBLIC_FILE" ]]
-  [[ "$HTTPROUTE_PUBLIC_FILE" == *"public.yaml" ]]
-}
-
-@test "build_httproute: exports HTTPROUTE_PRIVATE_FILE for private" {
-  export CONTEXT=$(load_fixture "public-and-private-routes")
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  export VISIBILITY="private"
-
-  source "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  [[ -n "$HTTPROUTE_PRIVATE_FILE" ]]
-  [[ "$HTTPROUTE_PRIVATE_FILE" == *"private.yaml" ]]
+  [[ "$(yq '.spec.parentRefs[0].name' "$(route_file private-10)")" == "gateway-private" ]]
 }

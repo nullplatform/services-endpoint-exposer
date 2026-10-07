@@ -3,96 +3,117 @@
 load helpers
 
 setup() {
-  # Call parent setup
   export TEST_TEMP_DIR="$(mktemp -d)"
   export OUTPUT_DIR="$TEST_TEMP_DIR/output"
   mkdir -p "$OUTPUT_DIR"
   export SERVICE_PATH="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 
-  # Load assert functions
   load_bats_support_libraries
 
-  # Mock K8S_NAMESPACE (required by build_context)
-  export K8S_NAMESPACE="test-namespace"
+  unset NP_ACTION_CONTEXT
+  export AUTH_TYPE="aws-cognito"
+  export COGNITO_USER_POOL_ARN_STAGING="arn:aws:cognito-idp:us-east-1:111111111111:userpool/us-east-1_abc"
+
+  # Scopes of the application as `np scope list` returns them. Visibility lives
+  # in capabilities.visibility; legacy-api uses the old service attribute.
+  export NP_SCOPES='[
+    {"id": 10, "slug": "api-public",  "capabilities": {"visibility": "public"}},
+    {"id": 20, "slug": "api-private", "capabilities": {"visibility": "private"}},
+    {"id": 30, "slug": "legacy-api",  "service": {"attributes": {"visibility": "internal"}}}
+  ]'
+  cat > "$TEST_TEMP_DIR/np" << 'EOF'
+#!/bin/bash
+echo "{\"results\": $NP_SCOPES}"
+EOF
+  chmod +x "$TEST_TEMP_DIR/np"
+  export PATH="$TEST_TEMP_DIR:$PATH"
 }
 
 teardown() {
-  if [[ -n "$TEST_TEMP_DIR" ]] && [[ -d "$TEST_TEMP_DIR" ]]; then
-    rm -rf "$TEST_TEMP_DIR"
-  fi
+  rm -rf "$TEST_TEMP_DIR"
 }
 
-@test "build_context: extracts service id and slug correctly" {
-  export CONTEXT=$(load_fixture "simple-public-routes")
-
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  [[ "$SERVICE_ID" == "fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd" ]]
-  [[ "$SERVICE_SLUG" == "api" ]]
-}
-
-@test "build_context: extracts public and private domains" {
-  export CONTEXT=$(load_fixture "public-and-private-routes")
-
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  [[ "$PUBLIC_DOMAIN" == "api.edenred.nullimplementation.com" ]]
-  [[ "$PRIVATE_DOMAIN" == "api-private.edenred.nullimplementation.com" ]]
-}
-
-@test "build_context: splits routes by visibility" {
-  export CONTEXT=$(load_fixture "public-and-private-routes")
-
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  # Check public routes
-  local num_public=$(echo "$PUBLIC_ROUTES_JSON" | jq 'length')
-  [[ "$num_public" == "1" ]]
-
-  # Check private routes
-  local num_private=$(echo "$PRIVATE_ROUTES_JSON" | jq 'length')
-  [[ "$num_private" == "2" ]]
-}
-
-@test "build_context: handles missing visibility as public" {
-  export CONTEXT='{
-    "service": {"id": "test-id", "slug": "test"},
-    "parameters": {"publicDomain": "test.com", "privateDomain": ""},
-    "routes": [
-      {"path": "/test", "method": "GET", "scope": "test:read"}
-    ]
+context_with_routes() {
+  jq -n --argjson routes "$1" '{
+    id: "action-1",
+    slug: "create-http-route-access-control",
+    tags: {application_id: "4"},
+    service: {id: "svc-1", slug: "api", dimensions: {environment: "staging"}},
+    parameters: {routes: $routes}
   }'
-
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  # Route without visibility should be treated as public
-  local num_public=$(echo "$PUBLIC_ROUTES_JSON" | jq 'length')
-  [[ "$num_public" == "1" ]]
-
-  local num_private=$(echo "$PRIVATE_ROUTES_JSON" | jq 'length')
-  [[ "$num_private" == "0" ]]
 }
 
-@test "build_context: handles empty private domain" {
-  export CONTEXT=$(load_fixture "simple-public-routes")
+@test "build_context: extracts service, action and application ids" {
+  export CONTEXT=$(context_with_routes '[]')
 
   source "$SERVICE_PATH/scripts/istio/build_context"
 
-  [[ "$PUBLIC_DOMAIN" == "api.edenred.nullimplementation.com" ]]
-  [[ -z "$PRIVATE_DOMAIN" ]]
+  [[ "$SERVICE_ID" == "svc-1" ]]
+  [[ "$SERVICE_SLUG" == "api" ]]
+  [[ "$ACTION_ID" == "action-1" ]]
+  [[ "$APPLICATION_ID" == "4" ]]
 }
 
-@test "build_context: exports all required variables" {
-  export CONTEXT=$(load_fixture "public-and-private-routes")
+@test "build_context: reads the notification from NP_ACTION_CONTEXT" {
+  export NP_ACTION_CONTEXT="'$(jq -n --argjson n "$(context_with_routes '[]')" '{notification: $n}')'"
+  export CONTEXT='{"account": {}, "application": {}}'
 
   source "$SERVICE_PATH/scripts/istio/build_context"
 
-  # Check that all required variables are exported
-  [[ -n "$SERVICE_ID" ]]
-  [[ -n "$SERVICE_SLUG" ]]
-  [[ -n "$PUBLIC_DOMAIN" ]]
-  [[ -n "$PRIVATE_DOMAIN" ]]
-  [[ -n "$ROUTES_JSON" ]]
-  [[ -n "$PUBLIC_ROUTES_JSON" ]]
-  [[ -n "$PRIVATE_ROUTES_JSON" ]]
+  [[ "$SERVICE_ID" == "svc-1" ]]
+}
+
+@test "build_context: resolves visibility from the scope's capabilities" {
+  export CONTEXT=$(context_with_routes '[
+    {"methods": ["GET"], "path": "/a", "scope": "api-public",  "groups": ["admin"]},
+    {"methods": ["GET"], "path": "/b", "scope": "api-private", "groups": ["admin"]},
+    {"methods": ["GET"], "path": "/c", "scope": "legacy-api",  "groups": ["admin"]}
+  ]')
+
+  source "$SERVICE_PATH/scripts/istio/build_context"
+
+  [[ "$(echo "$PUBLIC_ROUTES_JSON" | jq -c '[.[].path]')" == '["/a"]' ]]
+  [[ "$(echo "$PRIVATE_ROUTES_JSON" | jq -c '[.[].path]')" == '["/b","/c"]' ]]
+}
+
+@test "build_context: recomputes a stale stored visibility" {
+  export CONTEXT=$(context_with_routes '[
+    {"methods": ["GET"], "path": "/b", "scope": "api-private", "groups": ["admin"], "visibility": "public"}
+  ]')
+
+  source "$SERVICE_PATH/scripts/istio/build_context"
+
+  [[ "$(echo "$PUBLIC_ROUTES_JSON" | jq 'length')" == "0" ]]
+  [[ "$(echo "$PRIVATE_ROUTES_JSON" | jq 'length')" == "1" ]]
+}
+
+@test "build_context: falls back to the stored attributes when the action has no routes" {
+  export CONTEXT=$(jq -n '{
+    id: "action-2", slug: "delete-http-route-access-control", tags: {application_id: "4"},
+    service: {id: "svc-1", slug: "api", dimensions: {environment: "staging"},
+              attributes: {routes: [{"methods": ["GET"], "path": "/a", "scope": "api-public", "groups": ["admin"]}]}},
+    parameters: {}
+  }')
+
+  source "$SERVICE_PATH/scripts/istio/build_context"
+
+  [[ "$(echo "$ROUTES_JSON" | jq 'length')" == "1" ]]
+}
+
+@test "build_context: picks the Cognito pool of the service's environment" {
+  export CONTEXT=$(context_with_routes '[]')
+
+  source "$SERVICE_PATH/scripts/istio/build_context"
+
+  [[ "$COGNITO_USER_POOL_ARN" == "$COGNITO_USER_POOL_ARN_STAGING" ]]
+}
+
+@test "build_context: fails when the environment has no Cognito pool" {
+  unset COGNITO_USER_POOL_ARN_STAGING
+  export CONTEXT=$(context_with_routes '[]')
+
+  run bash -c "source '$SERVICE_PATH/scripts/istio/build_context'"
+
+  assert_failure
+  assert_output --partial "COGNITO_USER_POOL_ARN_STAGING is required"
 }

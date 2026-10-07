@@ -45,44 +45,24 @@ setup() {
   assert_output --partial "$SERVICE_SLUG-$SERVICE_ID-private"
 }
 
-@test "apply: detects public authz marker and attempts deletion" {
-  # Create marker file
-  touch "$OUTPUT_DIR/.authz-public-deleted"
-
-  run bash "$SERVICE_PATH/scripts/common/apply"
-
-  assert_success
-  assert_output --partial "Public AuthorizationPolicy marked for deletion"
-  assert_output --partial "authorizationpolicy"
-  assert_output --partial "$SERVICE_SLUG-$SERVICE_ID-authz-public"
-}
-
-@test "apply: detects private authz marker and attempts deletion" {
-  # Create marker file
-  touch "$OUTPUT_DIR/.authz-private-deleted"
-
-  run bash "$SERVICE_PATH/scripts/common/apply"
-
-  assert_success
-  assert_output --partial "Private AuthorizationPolicy marked for deletion"
-  assert_output --partial "authorizationpolicy"
-  assert_output --partial "$SERVICE_SLUG-$SERVICE_ID-authz-private"
-}
-
-@test "apply: handles multiple marker files" {
-  # Create multiple marker files
+@test "apply: handles both HTTPRoute markers" {
   touch "$OUTPUT_DIR/.httproute-public-deleted"
   touch "$OUTPUT_DIR/.httproute-private-deleted"
-  touch "$OUTPUT_DIR/.authz-public-deleted"
-  touch "$OUTPUT_DIR/.authz-private-deleted"
 
   run bash "$SERVICE_PATH/scripts/common/apply"
 
   assert_success
   assert_output --partial "Public HTTPRoute marked for deletion"
   assert_output --partial "Private HTTPRoute marked for deletion"
-  assert_output --partial "Public AuthorizationPolicy marked for deletion"
-  assert_output --partial "Private AuthorizationPolicy marked for deletion"
+}
+
+@test "apply: fails without a namespace instead of acting on the agent's own" {
+  export K8S_NAMESPACE=""
+
+  run bash "$SERVICE_PATH/scripts/common/apply"
+
+  assert_failure
+  assert_output --partial "K8S_NAMESPACE is required"
 }
 
 @test "apply: applies yaml files when present" {
@@ -112,13 +92,13 @@ EOF
 @test "apply: removes marker files after processing" {
   # Create marker files
   touch "$OUTPUT_DIR/.httproute-public-deleted"
-  touch "$OUTPUT_DIR/.authz-private-deleted"
+  touch "$OUTPUT_DIR/.httproute-private-deleted"
 
   bash "$SERVICE_PATH/scripts/common/apply"
 
   # Marker files should be removed
   assert_file_not_exists "$OUTPUT_DIR/.httproute-public-deleted"
-  assert_file_not_exists "$OUTPUT_DIR/.authz-private-deleted"
+  assert_file_not_exists "$OUTPUT_DIR/.httproute-private-deleted"
 }
 
 @test "apply: moves yaml files to apply directory after processing" {

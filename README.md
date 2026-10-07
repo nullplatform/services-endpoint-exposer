@@ -8,16 +8,36 @@ Developers declare which HTTP routes they want to expose, which nullplatform sco
 
 - Creates **HTTPRoutes** (Kubernetes Gateway API v1) pointing to the right backend service
 - Creates **AuthorizationPolicies** enforcing group-based access control
-- Creates **RequestAuthentication** resources validating JWT tokens (Cognito) or delegating to AVP
+- Creates **RequestAuthentication** resources validating JWT tokens (Cognito)
 
-Route visibility is resolved automatically from the scope's own `visibility` attribute (`external` → public gateway, `internal` → private gateway).
+Route visibility is resolved automatically from the scope's visibility (`capabilities.visibility`: `public` → public gateway, `private` → private gateway; older scope types' `external`/`internal` work too). It is recomputed on every action.
+
+### How requests are handled
+
+- **One HTTPRoute per scope** (and visibility), with only that scope's domain, so a path declared for two scopes never sends one scope's host to the other's backend. All of a scope's routes x verbs are matches of the same rule(s).
+- **Backends follow the scope's deployments**: the scope's active deployment, both sides (weighted) while a blue/green switch is running, the new one while finalizing, the old one while rolling back. Routes to a scope with no deployment yet answer **404**.
+- **Declared routes need a JWT** from the environment's Cognito pool whose `cognito:groups` claim contains one of the route's groups (401 for an invalid token, 403 otherwise). Requests to a managed domain that match no declared route get 403.
+- **Other hosts are untouched**: the exposer keeps a baseline policy per gateway (`hrac-baseline-<gateway>`) that admits every host it doesn't manage, so applications on the same gateway keep working. It is removed with the last exposer. A Bearer token from an issuer the RequestAuthentication doesn't know is still rejected with 401 on any host of the gateway (Istio applies RequestAuthentication gateway-wide).
+- **Updates never open a gap**: policies are applied in place and the ones for removed routes are pruned afterwards; HTTPRoutes of removed scopes are pruned the same way. Delete removes the HTTPRoutes first, then the policies.
+
+### Path syntax
+
+| Path | Matches | Notes |
+|---|---|---|
+| `/api/users` | exactly that path | |
+| `/api/users/{id}` or `/api/users/:id` | one segment in that position | |
+| `/api/*/orders` | one segment in that position | |
+| `/api/*` | `/api` and everything under it | |
+| `/files*` | any path starting with `/files` | only as the last character |
+
+Other placements of `*` (e.g. `/a*/b`) can't be enforced consistently by the route and the policy; those routes are skipped with a warning.
 
 ### Supported auth schemes
 
 | `AUTH_TYPE` | Mechanism |
 |---|---|
 | `aws-cognito` | Istio validates Cognito JWT; AuthorizationPolicies check `cognito:groups` claims |
-| `aws-avp` | Amazon Verified Permissions policy store controls access |
+| `aws-avp` | Amazon Verified Permissions policy store controls access. **Not implemented yet**: actions fail with an explicit error |
 
 ---
 
@@ -28,9 +48,9 @@ When creating or updating the service, developers configure one or more routes:
 | Field | Description |
 |---|---|
 | **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) |
-| **Path** | Route path. Supports exact (`/api/users`), parameterized (`/api/users/{id}`), and wildcard (`/api/users/*`) |
+| **Path** | Route path; see [Path syntax](#path-syntax) |
 | **Scope** | nullplatform scope slug that backs this route |
-| **Authorized Groups** | Comma-separated list of groups allowed to call this route (e.g. `admin, read-only`) |
+| **Authorized Groups** | Groups allowed to call this route (e.g. `admin`, `read-only`); at least one |
 
 Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below).
 
@@ -182,7 +202,7 @@ module "scope_definition_agent_association" {
 
 Without this override wired into the scope's channel, HTTPRoutes will point to stale backend service names after a blue/green deploy and traffic will break.
 
-The override looks up the service spec by the slug in `container-scope-override/values.yaml` (`http-route-access-control`, the slug this repo's spec gets). If your installation registered the spec under another slug, set `EXPOSER_SERVICE_SPECIFICATION_SLUG` in the agent environment (e.g. `EXPOSER_SERVICE_SPECIFICATION_SLUG=endpoint-exposer`). When the spec isn't visible to the deploying application the sync step is skipped, so apps that don't use the exposer deploy normally. Every **active** exposer service of the application is updated; services whose create didn't succeed are skipped because nullplatform rejects updates on them.
+The override looks up the service spec by the slug in `container-scope-override/values.yaml` (`http-route-access-control`, the slug this repo's spec gets). If your installation registered the spec under another slug, set `EXPOSER_SERVICE_SPECIFICATION_SLUG` in the agent environment (e.g. `EXPOSER_SERVICE_SPECIFICATION_SLUG=endpoint-exposer`). When the spec isn't visible to the deploying application the sync step is skipped, so apps that don't use the exposer deploy normally. Every **active** exposer of the application that routes to the deployed scope is updated (a fresh update, after any action already in progress finishes); services whose create didn't succeed are skipped because nullplatform rejects updates on them. Each update may take up to `EXPOSER_SYNC_TIMEOUT_SECONDS` (default 600) before the deploy step fails.
 
 ---
 
@@ -206,7 +226,7 @@ This means a single agent deployment can serve multiple environments, each with 
 ├── entrypoint/              # Action handler (service, link)
 ├── scripts/
 │   ├── common/              # apply, manage_policies
-│   ├── istio/               # build_context, build_httproute, process_routes, build_allow_policies,
+│   ├── istio/               # build_context, build_httproute, build_rule, paths.jq, build_allow_policies,
 │   │                        # build_request_authentication, delete_*, fetch_provider_data, config
 │   ├── np/                  # update_service_results
 │   └── avp/                 # AVP-specific policy management (aws-avp only)

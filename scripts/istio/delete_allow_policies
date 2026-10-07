@@ -12,7 +12,7 @@ POLICIES=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" \
 
 if [[ -z "$POLICIES" ]]; then
   echo "No AuthorizationPolicies found for service $SERVICE_ID"
-  exit 0
+  return 0 2>/dev/null || exit 0
 fi
 
 for POLICY_NAME in $POLICIES; do

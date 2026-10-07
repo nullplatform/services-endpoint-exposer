@@ -8,7 +8,7 @@ FROM public.ecr.aws/nullplatform/scopes/worker-bridge:2.0.1
 
 # Tooling the exposer workflows call (istio/gateway objects, template
 # rendering): kubectl + gomplate + yq (HTTPRoute YAML manipulation in
-# scripts/istio/build_ingress_with_rule). bash, jq, np, base64 and curl
+# scripts/istio/build_httproute). bash, jq, np, base64 and curl
 # ship in the base.
 RUN apk add --no-cache kubectl gomplate yq-go
 

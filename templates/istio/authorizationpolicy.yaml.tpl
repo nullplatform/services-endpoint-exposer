@@ -15,9 +15,16 @@ spec:
     - to:
         - operation:
             hosts: ["{{ .host }}"]
-            paths: ["{{ .path }}"]
+            paths: {{ .paths | data.ToJSON }}
+{{- if .method }}
             methods: ["{{ .method }}"]
-{{- if gt (len .groups) 0 }}
+{{- end }}
+{{- if eq (len .groups) 0 }}
+      # No groups: any valid JWT, never anonymous.
+      from:
+        - source:
+            requestPrincipals: ["*"]
+{{- else }}
       when:
         - key: "request.auth.claims[cognito:groups]"
           values:

@@ -1,8 +1,19 @@
 #!/bin/bash
 
-echo "=== DEBUG: Starting sync_exposer script ==="
+# Runs inside the scope's deploy workflows (blue_green, switch_traffic,
+# finalize, rollback, initial, delete). Re-runs `update` on every endpoint
+# exposer of the application that routes to the scope being deployed, so their
+# HTTPRoutes follow the scope's Kubernetes services. A failure fails the deploy
+# step: the exposer routes would otherwise point at the wrong backend.
+
+echo "=== Starting sync_exposer ==="
 
 APPLICATION_NRN=$(jq -r .application.nrn <<< "$CONTEXT")
+DEPLOYED_SCOPE_ID=$(jq -r '.scope.id // "" | tostring' <<< "$CONTEXT")
+DEPLOYED_SCOPE_SLUG=$(jq -r '.scope.slug // ""' <<< "$CONTEXT")
+if [[ -z "$DEPLOYED_SCOPE_SLUG" && -n "$DEPLOYED_SCOPE_ID" ]]; then
+  DEPLOYED_SCOPE_SLUG=$(np scope read --id "$DEPLOYED_SCOPE_ID" --format json | jq -r '.slug // ""')
+fi
 
 # values.yaml ships the slug the spec gets when registered from this repo
 # ("http-route-access-control"). Installations that registered it under another
@@ -10,188 +21,109 @@ APPLICATION_NRN=$(jq -r .application.nrn <<< "$CONTEXT")
 # agent environment; values.yaml configuration would otherwise shadow it.
 SERVICE_SPECIFICATION_SLUG="${EXPOSER_SERVICE_SPECIFICATION_SLUG:-$SERVICE_SPECIFICATION_SLUG}"
 
-echo "SERVICE SPECIFICATION SLUG: $SERVICE_SPECIFICATION_SLUG, APPLICATION_NRN: $APPLICATION_NRN"
+# Each update renders the exposer's routes, which takes a few seconds per scope.
+ACTION_TIMEOUT_SECONDS="${EXPOSER_SYNC_TIMEOUT_SECONDS:-600}"
+POLL_SECONDS="${EXPOSER_SYNC_POLL_SECONDS:-5}"
 
-# Step 1: Get service specification by slug
-echo "DEBUG: Fetching service specifications..."
-SERVICE_SPECS=$(np service specification list --nrn "$APPLICATION_NRN" --type dependency --format json)
-SERVICE_SPEC=$(jq -c --arg slug "$SERVICE_SPECIFICATION_SLUG" '
-  .results
-  | map(select(.slug == $slug))
-  | .[0]
-' <<< "$SERVICE_SPECS")
+echo "Spec: $SERVICE_SPECIFICATION_SLUG, application: $APPLICATION_NRN, scope: ${DEPLOYED_SCOPE_SLUG:-unknown}"
 
-SERVICE_SPEC_ID=$(jq -r .id <<< "$SERVICE_SPEC")
+SERVICE_SPEC_ID=$(np service specification list --nrn "$APPLICATION_NRN" --type dependency --format json \
+  | jq -r --arg slug "$SERVICE_SPECIFICATION_SLUG" 'first(.results[] | select(.slug == $slug) | .id) // ""')
 
 # This override runs on every deploy of the scope, including apps that never
 # installed the exposer. A missing spec means there is nothing to sync, not a
 # failed deploy.
-if [[ -z "$SERVICE_SPEC_ID" || "$SERVICE_SPEC_ID" == "null" ]]; then
+if [[ -z "$SERVICE_SPEC_ID" ]]; then
   echo "No service specification with slug '$SERVICE_SPECIFICATION_SLUG' visible to $APPLICATION_NRN, skipping exposer sync"
   exit 0
 fi
 
-echo "DEBUG: SERVICE_SPEC_ID=$SERVICE_SPEC_ID"
-
-# Step 2: Get every service instance of that specification in the application
-echo "DEBUG: Fetching services for application..."
-SERVICES=$(np service list --nrn "$APPLICATION_NRN" --format json)
-
-SERVICES_TO_SYNC=$(jq -c --arg spec_id "$SERVICE_SPEC_ID" '
-  .results
-  | map(select(.specification_id == $spec_id))
-' <<< "$SERVICES")
-
-if [[ "$(jq 'length' <<< "$SERVICES_TO_SYNC")" -eq 0 ]]; then
-  echo "Could not find service instance for specification '$SERVICE_SPEC_ID', skipping exposer sync"
-  exit 0
-fi
-
-sync_service() {
-  local SERVICE_ID="$1"
-  local PARAMETERS ACTION_ID ACTION_RESPONSE ACTION_STATUS EXISTING_ACTIONS EXISTING_ACTION EXISTING_ACTION_ID
-  local create_attempt=0 iteration=0
-
-  # Step 3: Get service attributes as parameters
-  echo "DEBUG: Reading service attributes..."
-  SERVICE_DATA=$(np service read --id "$SERVICE_ID" --format json)
-  PARAMETERS=$(jq -c .attributes <<< "$SERVICE_DATA")
-
-  echo "DEBUG: PARAMETERS=$PARAMETERS"
-
-  # Step 4: Get action specification with slug "update-<service-spec-slug>"
-  ACTION_SLUG="update-$SERVICE_SPECIFICATION_SLUG"
-  echo "DEBUG: Fetching action specifications (looking for slug: $ACTION_SLUG)..."
-  SERVICE_ACTIONS=$(np service specification action specification list --serviceSpecificationId "$SERVICE_SPEC_ID" --format json)
-
-  ACTION_SPEC=$(jq -c --arg slug "$ACTION_SLUG" '
-    .results
-    | map(select(.slug == $slug))
-    | .[0]
-  ' <<< "$SERVICE_ACTIONS")
-
-  ACTION_SPEC_ID=$(jq -r .id <<< "$ACTION_SPEC")
-
-  if [[ -z "$ACTION_SPEC_ID" || "$ACTION_SPEC_ID" == "null" ]]; then
-    echo "Error: Could not find action specification with slug '$ACTION_SLUG' for service specification '$SERVICE_SPEC_ID'"
-    return 1
-  fi
-
-  echo "DEBUG: ACTION_SPEC_ID=$ACTION_SPEC_ID"
-
-  # Step 5: Create service action with parameters (with retry for concurrency)
-  echo "DEBUG: Creating service action..."
-
-  MAX_CREATE_RETRIES=10
-  RETRY_DELAY=5
-  ACTION_ID=""
-
-  while [[ -z "$ACTION_ID" || "$ACTION_ID" == "null" ]]; do
-    ((create_attempt++))
-    echo "DEBUG: Create attempt $create_attempt/$MAX_CREATE_RETRIES"
-
-    if [ "$create_attempt" -gt $MAX_CREATE_RETRIES ]; then
-      echo "Error: Maximum number of create attempts (${MAX_CREATE_RETRIES}) reached. Could not create action."
-      return 1
-    fi
-
-    # Add delay before retry (except on first attempt)
-    if [ "$create_attempt" -gt 1 ]; then
-      echo "DEBUG: Waiting ${RETRY_DELAY} seconds before retry..."
-      sleep $RETRY_DELAY
-    fi
-
-    # Try to create the action
-    ACTION_RESPONSE=$(np service action create --serviceId "$SERVICE_ID" --body "$(jq -n --argjson params "$PARAMETERS" --arg spec_id "$ACTION_SPEC_ID" '{name: "update", parameters: $params, specification_id: $spec_id}')" --format json 2>&1 || true)
-
-    # Check if response contains an error about action already in progress
-    if echo "$ACTION_RESPONSE" | grep -q "already an action with status.*in_progress"; then
-      echo "DEBUG: Action already in progress detected"
-
-      # Try to find the existing in_progress action
-      echo "DEBUG: Attempting to find existing in_progress action..."
-      EXISTING_ACTIONS=$(np service action list --serviceId "$SERVICE_ID" --format json)
-      EXISTING_ACTION=$(echo "$EXISTING_ACTIONS" | jq -c --arg spec_id "$ACTION_SPEC_ID" '
-        .results
-        | map(select(.specification_id == $spec_id and .status == "in_progress"))
-        | .[0]
-      ')
-
-      EXISTING_ACTION_ID=$(echo "$EXISTING_ACTION" | jq -r '.id // empty')
-
-      if [[ -n "$EXISTING_ACTION_ID" && "$EXISTING_ACTION_ID" != "null" ]]; then
-        echo "DEBUG: Found existing in_progress action with ID: $EXISTING_ACTION_ID"
-        ACTION_ID="$EXISTING_ACTION_ID"
-        echo "Using existing action instead of creating new one"
-        break
-      fi
-
-      echo "DEBUG: No existing action found, will retry..."
-    elif echo "$ACTION_RESPONSE" | grep -q '"error"'; then
-      echo "ERROR: Failed to create action: $ACTION_RESPONSE"
-      echo "DEBUG: Will retry after delay..."
-    else
-      # Success - extract action ID
-      ACTION_ID=$(echo "$ACTION_RESPONSE" | jq -r '.id // empty')
-
-      if [[ -n "$ACTION_ID" && "$ACTION_ID" != "null" ]]; then
-        echo "DEBUG: ACTION_ID=$ACTION_ID"
-        echo "Created endpoint exposer update action[id=$ACTION_ID], waiting for its completion"
-        break
-      else
-        echo "DEBUG: Could not extract ACTION_ID from response: $ACTION_RESPONSE"
-        echo "DEBUG: Will retry after delay..."
-      fi
-    fi
-  done
-
-  # Step 6: Wait for action to complete
-  MAX_ITERATIONS=20
-
-  echo "DEBUG: Starting polling loop for action status..."
-  while true; do
-    ((iteration++))
-    echo "DEBUG: Iteration $iteration/$MAX_ITERATIONS"
-
-    if [ "$iteration" -gt $MAX_ITERATIONS ]; then
-      echo "Error: Maximum number of iterations (${MAX_ITERATIONS}) reached. Could not update the endpoint exposer."
-      return 1
-    fi
-
-    echo "DEBUG: Reading action status..."
-    ACTION_RESPONSE=$(np service action read --serviceId "$SERVICE_ID" --id "$ACTION_ID" --format json)
-    ACTION_STATUS=$(jq -r .status <<< "$ACTION_RESPONSE")
-
-    echo "Checking endpoint exposer update action[id=$ACTION_ID, status=$ACTION_STATUS]"
-
-    if [[ "$ACTION_STATUS" == "success" ]]; then
-      echo "✅ Endpoint exposer successfully updated"
-      break
-    elif [[ "$ACTION_STATUS" == "failed" ]]; then
-      echo "❌ Could not update endpoint exposer, deployment will be rollbacked"
-      return 1
-    fi
-
-    echo "DEBUG: Sleeping for 5 seconds..."
-    sleep 5
-  done
-}
-
-FAILED_SERVICES=()
-for SERVICE_ID in $(jq -r '.[] | select(.status == "active") | .id' <<< "$SERVICES_TO_SYNC"); do
-  echo "DEBUG: SERVICE_ID=$SERVICE_ID"
-  if ! sync_service "$SERVICE_ID"; then
-    FAILED_SERVICES+=("$SERVICE_ID")
-  fi
-done
-
-# An update action is rejected unless the service's create succeeded, so only
-# active instances can be synced; the rest are reported, not retried.
-jq -r '.[] | select(.status != "active") | "Skipping endpoint exposer \(.id) (status=\(.status)): only active services can be updated"' <<< "$SERVICES_TO_SYNC"
-
-if [[ ${#FAILED_SERVICES[@]} -gt 0 ]]; then
-  echo "❌ Could not update endpoint exposer(s): ${FAILED_SERVICES[*]}"
+UPDATE_ACTION_SPEC_ID=$(np service specification action specification list --serviceSpecificationId "$SERVICE_SPEC_ID" --format json \
+  | jq -r --arg slug "update-$SERVICE_SPECIFICATION_SLUG" 'first(.results[] | select(.slug == $slug) | .id) // ""')
+if [[ -z "$UPDATE_ACTION_SPEC_ID" ]]; then
+  echo "Error: no action specification 'update-$SERVICE_SPECIFICATION_SLUG' for service specification $SERVICE_SPEC_ID"
   exit 1
 fi
 
-echo "=== DEBUG: sync_exposer script completed successfully ==="
+# Exposers of the application that route to the deployed scope (all of them
+# when the scope isn't known).
+EXPOSERS=$(np service list --nrn "$APPLICATION_NRN" --specification-id "$SERVICE_SPEC_ID" --all --format json \
+  | jq -c --arg spec "$SERVICE_SPEC_ID" --arg scope "$DEPLOYED_SCOPE_SLUG" '
+      [.results[]
+        | select(.specification_id == $spec)
+        | select($scope == "" or ([.attributes.routes[]?.scope] | index($scope)))]')
+
+if [[ "$(jq 'length' <<< "$EXPOSERS")" -eq 0 ]]; then
+  echo "No endpoint exposer routes to this scope, skipping exposer sync"
+  exit 0
+fi
+
+# An update action is rejected unless the service's create succeeded, so only
+# active instances can be synced; the rest are reported, not retried.
+jq -r '.[] | select(.status != "active") | "Skipping endpoint exposer \(.name) [\(.id)] (status=\(.status)): only active services can be updated"' <<< "$EXPOSERS"
+
+# wait_for_action SERVICE_ID ACTION_ID -> final status
+wait_for_action() {
+  local service_id="$1" action_id="$2" status="" waited=0
+  while (( waited < ACTION_TIMEOUT_SECONDS )); do
+    status=$(np service action read --serviceId "$service_id" --id "$action_id" --format json | jq -r '.status // ""')
+    case "$status" in
+      success|failed|cancelled) echo "$status"; return 0 ;;
+    esac
+    sleep "$POLL_SECONDS"
+    waited=$((waited + POLL_SECONDS))
+  done
+  echo "timeout"
+}
+
+sync_service() {
+  local service_id="$1" name="$2" parameters pending action_id status
+
+  # An action already pending or in progress may have read the Kubernetes
+  # services before this deploy step changed them: let it finish, then run a
+  # fresh update.
+  pending=$(np service action list --serviceId "$service_id" --format json \
+    | jq -r '[.results[] | select(.status == "pending" or .status == "in_progress") | .id] | .[]')
+  for action_id in $pending; do
+    echo "Waiting for action $action_id of $name to finish before syncing..."
+    wait_for_action "$service_id" "$action_id" >/dev/null
+  done
+
+  # The routes as the user declared them; build_context recomputes the derived
+  # fields (visibility, summary).
+  parameters=$(np service read --id "$service_id" --format json \
+    | jq -c '{routes: [(.attributes.routes // [])[] | del(.visibility, .summary)]}')
+  [[ -z "$parameters" ]] && parameters='{}'
+
+  action_id=$(np service action create --serviceId "$service_id" \
+    --body "$(jq -nc --argjson params "$parameters" --arg spec_id "$UPDATE_ACTION_SPEC_ID" \
+      '{name: "update", parameters: $params, specification_id: $spec_id}')" \
+    --format json | jq -r '.id // ""')
+  if [[ -z "$action_id" ]]; then
+    echo "❌ Could not create an update action for endpoint exposer $name [$service_id]"
+    return 1
+  fi
+
+  echo "Created update action $action_id for endpoint exposer $name, waiting for it..."
+  status=$(wait_for_action "$service_id" "$action_id")
+  if [[ "$status" != "success" ]]; then
+    echo "❌ Update action $action_id of endpoint exposer $name ended $status"
+    return 1
+  fi
+  echo "✅ Endpoint exposer $name updated"
+}
+
+FAILED=()
+while IFS=$'\t' read -r SERVICE_ID SERVICE_NAME; do
+  [[ -z "$SERVICE_ID" ]] && continue
+  if ! sync_service "$SERVICE_ID" "$SERVICE_NAME"; then
+    FAILED+=("$SERVICE_NAME [$SERVICE_ID]")
+  fi
+done < <(jq -r '.[] | select(.status == "active") | [.id, .name] | @tsv' <<< "$EXPOSERS")
+
+if [[ ${#FAILED[@]} -gt 0 ]]; then
+  echo "❌ Could not update endpoint exposer(s): ${FAILED[*]}"
+  exit 1
+fi
+
+echo "=== sync_exposer completed ==="

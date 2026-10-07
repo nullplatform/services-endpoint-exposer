@@ -8,7 +8,7 @@ echo "=== Building Cognito RequestAuthentication ==="
 
 if [[ -z "${COGNITO_USER_POOL_ARN:-}" || "$COGNITO_USER_POOL_ARN" == "null" || "$COGNITO_USER_POOL_ARN" == "" ]]; then
   echo "No COGNITO_USER_POOL_ARN set, skipping RequestAuthentication generation"
-  exit 0
+  return 0 2>/dev/null || exit 0
 fi
 
 # Derive issuer and jwks_uri from ARN
@@ -33,57 +33,68 @@ for SUFFIX in public private; do
   RA_NAME="cognito-jwt-${SUFFIX}"
   OUTPUT_FILE="$OUTPUT_DIR/request-authentication-${SUFFIX}.yaml"
 
-  # Check if already exists in cluster
-  EXISTING=$(kubectl get requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" -o json 2>/dev/null || echo "")
+  # The RequestAuthentication is shared by every exposer on the gateway (one
+  # jwtRule per Cognito pool). Create it or merge this issuer into it right
+  # away, guarded by resourceVersion, so two services acting at once can't
+  # overwrite each other's issuer. Idempotent: create.yaml runs it again after
+  # apply in case a concurrent delete removed the issuer meanwhile.
+  RA_DONE=false
+  for _ in 1 2 3 4 5; do
+    EXISTING=$(kubectl get requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" -o json 2>/dev/null || echo "")
 
-  if [[ -n "$EXISTING" ]]; then
-    # Check if this issuer is already present
-    ALREADY_HAS_ISSUER=$(echo "$EXISTING" | jq -r --arg issuer "$ISSUER" \
-      '[.spec.jwtRules[].issuer] | contains([$issuer])')
-
-    if [[ "$ALREADY_HAS_ISSUER" == "true" ]]; then
-      echo "ℹ️  cognito-jwt-${SUFFIX} already has issuer $ISSUER — skipping"
+    if [[ -z "$EXISTING" ]]; then
+      CONTEXT_FILE="$OUTPUT_DIR/request-authentication-${SUFFIX}-ctx.json"
+      jq -n \
+        --arg suffix            "$SUFFIX" \
+        --arg gateway_name      "$GATEWAY_NAME" \
+        --arg gateway_namespace "$GATEWAY_NAMESPACE" \
+        --arg issuer            "$ISSUER" \
+        --arg jwks_uri          "$JWKS_URI" \
+        --arg cookie_name       "${COGNITO_TOKEN_COOKIE_NAME:-}" \
+        '{suffix: $suffix, gateway_name: $gateway_name, gateway_namespace: $gateway_namespace,
+          issuer: $issuer, jwks_uri: $jwks_uri, cookie_name: $cookie_name}' \
+        > "$CONTEXT_FILE"
+      gomplate -c ".=$CONTEXT_FILE" -f "$TEMPLATE" -o "$OUTPUT_FILE.tmp"
+      rm "$CONTEXT_FILE"
+      if kubectl create -f "$OUTPUT_FILE.tmp"; then
+        rm "$OUTPUT_FILE.tmp"
+        echo "✅ RequestAuthentication created: $RA_NAME (gateway: ${GATEWAY_NAME})"
+        RA_DONE=true
+        break
+      fi
+      rm -f "$OUTPUT_FILE.tmp"
+      echo "Creating $RA_NAME failed (created concurrently?), retrying..."
+      sleep 1
       continue
     fi
 
-    # Different issuer: merge new jwtRule into existing ones
-    echo "cognito-jwt-${SUFFIX} exists with different issuer — merging..."
-    MERGED_RULES=$(echo "$EXISTING" | jq \
+    if [[ "$(echo "$EXISTING" | jq -r --arg issuer "$ISSUER" '[.spec.jwtRules[]?.issuer] | index($issuer) != null')" == "true" ]]; then
+      echo "ℹ️  $RA_NAME already has issuer $ISSUER"
+      RA_DONE=true
+      break
+    fi
+
+    PATCH=$(echo "$EXISTING" | jq -c \
       --arg issuer "$ISSUER" \
       --arg jwks_uri "$JWKS_URI" \
       --arg cookie_name "${COGNITO_TOKEN_COOKIE_NAME:-}" \
-      '.spec.jwtRules + [
-        {issuer: $issuer, jwksUri: $jwks_uri}
-        + (if $cookie_name != "" then {fromCookies: [$cookie_name]} else {} end)
-      ]')
+      '[{op: "test", path: "/metadata/resourceVersion", value: .metadata.resourceVersion},
+        {op: "replace", path: "/spec/jwtRules", value: ((.spec.jwtRules // []) + [
+          {issuer: $issuer, jwksUri: $jwks_uri}
+          + (if $cookie_name != "" then {fromCookies: [$cookie_name]} else {} end)])}]')
+    if kubectl patch requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" --type=json -p="$PATCH"; then
+      echo "✅ Merged issuer $ISSUER into $RA_NAME"
+      RA_DONE=true
+      break
+    fi
+    echo "$RA_NAME changed while merging, retrying..."
+    sleep 1
+  done
 
-    # Patch the existing resource directly (no file needed for apply step)
-    kubectl patch requestauthentication "$RA_NAME" -n "$GATEWAY_NAMESPACE" \
-      --type=json \
-      -p="$(echo "$MERGED_RULES" | jq '[{op: "replace", path: "/spec/jwtRules", value: .}]')"
-    echo "✅ Merged issuer into cognito-jwt-${SUFFIX}"
-    continue
+  if [[ "$RA_DONE" != "true" ]]; then
+    echo "ERROR: could not create or update $RA_NAME"
+    exit 1
   fi
-
-  # Doesn't exist: generate file for apply step to create
-  CONTEXT_FILE="$OUTPUT_DIR/request-authentication-${SUFFIX}-ctx.json"
-  jq -n \
-    --arg suffix            "$SUFFIX" \
-    --arg gateway_name      "$GATEWAY_NAME" \
-    --arg gateway_namespace "$GATEWAY_NAMESPACE" \
-    --arg issuer            "$ISSUER" \
-    --arg jwks_uri          "$JWKS_URI" \
-    --arg cookie_name       "${COGNITO_TOKEN_COOKIE_NAME:-}" \
-    '{suffix: $suffix, gateway_name: $gateway_name, gateway_namespace: $gateway_namespace,
-      issuer: $issuer, jwks_uri: $jwks_uri, cookie_name: $cookie_name}' \
-    > "$CONTEXT_FILE"
-
-  gomplate -c ".=$CONTEXT_FILE" \
-    -f "$TEMPLATE" \
-    -o "$OUTPUT_FILE"
-  rm "$CONTEXT_FILE"
-
-  echo "✅ RequestAuthentication generated: $RA_NAME (gateway: ${GATEWAY_NAME})"
 done
 
 echo "=== RequestAuthentication complete ==="

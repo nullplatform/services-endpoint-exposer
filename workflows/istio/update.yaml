@@ -10,6 +10,3 @@ steps:
     configuration:
       ACTION: apply
       DRY_RUN: false
-  - name: "update service results"
-    type: script
-    file: "$SERVICE_PATH/scripts/np/update_service_results"

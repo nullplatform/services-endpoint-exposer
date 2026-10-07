@@ -2,228 +2,125 @@
 
 load helpers
 
+# Runs the create workflow's scripts in order (build_context, build_httproute
+# public/private, manage_policies, baseline, apply, prune) with np and kubectl
+# mocked, and checks what reaches the cluster.
+
 setup() {
   export TEST_TEMP_DIR="$(mktemp -d)"
   export OUTPUT_DIR="$TEST_TEMP_DIR/output"
   mkdir -p "$OUTPUT_DIR"
   export SERVICE_PATH="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
-
-  # Load assert functions
   load_bats_support_libraries
 
-  export K8S_NAMESPACE="test-namespace"
-  export ALB_NAME="test-alb"
-  export ACTION="apply"
+  unset NP_ACTION_CONTEXT
+  export AUTH_TYPE="aws-cognito"
+  export COGNITO_USER_POOL_ARN_PRODUCTION="arn:aws:cognito-idp:us-east-1:111111111111:userpool/us-east-1_pool"
   export DRY_RUN="true"
+  export KUBECTL_CALLS="$TEST_TEMP_DIR/kubectl-calls"
 
-  # Mock kubectl
-  mock_kubectl
+  export NP_SCOPES='[
+    {"id": 10, "slug": "prod",     "domain": "prod.example.com",     "capabilities": {"visibility": "public"},  "active_deployment": 100},
+    {"id": 30, "slug": "backoffice", "domain": "bo.internal.example", "capabilities": {"visibility": "private"}, "active_deployment": 300}
+  ]'
+  export K8S_SERVICES='{"items": [
+    {"metadata": {"name": "d-10-100"},  "spec": {"selector": {"scope_id": "10", "deployment_id": "100"}, "ports": [{"port": 8080}]}},
+    {"metadata": {"name": "d-30-300"},  "spec": {"selector": {"scope_id": "30", "deployment_id": "300"}, "ports": [{"port": 8080}]}}
+  ]}'
 
-  # Mock gomplate
-  cat > "$TEST_TEMP_DIR/gomplate" << 'EOF'
+  cat > "$TEST_TEMP_DIR/np" << 'EOF'
 #!/bin/bash
-TEMPLATE_FILE=""
-OUTPUT_FILE=""
-CONTEXT_FILE=""
-
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    -f) TEMPLATE_FILE="$2"; shift 2 ;;
-    -o) OUTPUT_FILE="$2"; shift 2 ;;
-    -c) CONTEXT_FILE="${2#.=}"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-
-if [[ -n "$TEMPLATE_FILE" ]] && [[ -n "$OUTPUT_FILE" ]]; then
-  # Read context if provided
-  if [[ -n "$CONTEXT_FILE" ]] && [[ -f "$CONTEXT_FILE" ]]; then
-    CONTEXT_JSON=$(cat "$CONTEXT_FILE")
-    SERVICE_SLUG=$(echo "$CONTEXT_JSON" | jq -r '.service_slug // ""')
-    SERVICE_ID=$(echo "$CONTEXT_JSON" | jq -r '.service_id // ""')
-    SUFFIX=$(echo "$CONTEXT_JSON" | jq -r '.suffix // ""')
-    DOMAIN=$(echo "$CONTEXT_JSON" | jq -r '.domain // ""')
-    NAMESPACE=$(echo "$CONTEXT_JSON" | jq -r '.k8s_namespace // .gateway_namespace // ""')
-  fi
-
-  # Determine resource type from template
-  if [[ "$TEMPLATE_FILE" == *"httproute"* ]]; then
-    cat > "$OUTPUT_FILE" << YAML
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: ${SERVICE_SLUG}-${SERVICE_ID}-${SUFFIX}
-  namespace: ${NAMESPACE}
-  labels:
-    nullplatform.com/managed-by: endpoint-exposer
-    nullplatform.com/service-id: "${SERVICE_ID}"
-    app.kubernetes.io/name: ${SERVICE_SLUG}
-spec:
-  hostnames:
-  - ${DOMAIN}
-YAML
-  elif [[ "$TEMPLATE_FILE" == *"authorization"* ]]; then
-    cat > "$OUTPUT_FILE" << YAML
-apiVersion: security.istio.io/v1
-kind: AuthorizationPolicy
-metadata:
-  name: ${SERVICE_SLUG}-${SERVICE_ID}-authz-${SUFFIX}
-  namespace: ${NAMESPACE}
-  labels:
-    nullplatform.com/managed-by: endpoint-exposer
-    nullplatform.com/service-id: "${SERVICE_ID}"
-    app.kubernetes.io/name: ${SERVICE_SLUG}
-spec:
-  action: CUSTOM
-YAML
-  fi
-fi
+case "$1 $2" in
+  "scope list") echo "{\"results\": $NP_SCOPES}" ;;
+  "scope read")
+    id=$(echo "$*" | sed -E 's/.*--id ([0-9]+).*/\1/')
+    echo "$NP_SCOPES" | jq --argjson id "$id" 'first(.[] | select(.id == $id)) + {in_progress_deployment: null}' ;;
+esac
 EOF
-  chmod +x "$TEST_TEMP_DIR/gomplate"
+  cat > "$TEST_TEMP_DIR/kubectl" << 'EOF'
+#!/bin/bash
+echo "$*" >> "$KUBECTL_CALLS"
+case "$1 $2" in
+  "get services") echo "$K8S_SERVICES" ;;
+  "get authorizationpolicy") if [[ "$*" == *"-o json"* ]]; then echo '{"items": []}'; fi ;;
+  "get requestauthentication") exit 1 ;;
+esac
+exit 0
+EOF
+  chmod +x "$TEST_TEMP_DIR/np" "$TEST_TEMP_DIR/kubectl"
   export PATH="$TEST_TEMP_DIR:$PATH"
 
-  # Mock process_routes script (it's sourced by build_httproute)
-  mkdir -p "$SERVICE_PATH/scripts/istio"
-  if [[ ! -f "$SERVICE_PATH/scripts/istio/process_routes.bak" ]]; then
-    # Backup original if exists
-    if [[ -f "$SERVICE_PATH/scripts/istio/process_routes" ]]; then
-      cp "$SERVICE_PATH/scripts/istio/process_routes" "$SERVICE_PATH/scripts/istio/process_routes.bak"
-    fi
-  fi
-
-  # Create a minimal mock that does nothing (for testing we just need the HTTPRoute YAML)
-  cat > "$SERVICE_PATH/scripts/istio/process_routes" << 'MOCKEOF'
-#!/bin/bash
-# Mock process_routes for testing - does nothing
-# In real tests, the gomplate mock already creates the YAML we need
-# Use return instead of exit so it doesn't exit the sourcing shell
-return 0 2>/dev/null || true
-MOCKEOF
-  chmod +x "$SERVICE_PATH/scripts/istio/process_routes"
+  export CONTEXT=$(jq -n '{
+    id: "action-1", slug: "create-http-route-access-control", tags: {application_id: "4"},
+    service: {id: "svc-1", slug: "api", dimensions: {environment: "production"}},
+    parameters: {routes: [
+      {methods: ["GET", "POST"], path: "/orders/{id}", scope: "prod",       groups: ["admin", "ops"]},
+      {methods: ["GET"],         path: "/files/*",     scope: "prod",       groups: ["admin"]},
+      {methods: ["GET"],         path: "/reports",     scope: "backoffice", groups: ["finance"]}
+    ]}
+  }')
 }
 
-teardown() {
-  # Always restore original process_routes if backup exists
-  if [[ -f "$SERVICE_PATH/scripts/istio/process_routes.bak" ]]; then
-    mv -f "$SERVICE_PATH/scripts/istio/process_routes.bak" "$SERVICE_PATH/scripts/istio/process_routes"
-  fi
+teardown() { rm -rf "$TEST_TEMP_DIR"; }
 
-  # Clean up temp directory
-  if [[ -n "$TEST_TEMP_DIR" ]] && [[ -d "$TEST_TEMP_DIR" ]]; then
-    rm -rf "$TEST_TEMP_DIR"
-  fi
+run_create() {
+  bash -c '
+    set -euo pipefail
+    source "$SERVICE_PATH/scripts/istio/build_context"
+    VISIBILITY=public  bash "$SERVICE_PATH/scripts/istio/build_httproute"
+    VISIBILITY=private bash "$SERVICE_PATH/scripts/istio/build_httproute"
+    ACTION=apply bash "$SERVICE_PATH/scripts/common/manage_policies"
+    BASELINE_INCLUDE_RENDERED=true bash "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
+    ACTION=apply bash "$SERVICE_PATH/scripts/common/apply"
+    bash "$SERVICE_PATH/scripts/istio/prune_stale_resources"
+  '
 }
 
-@test "integration: complete workflow with public routes only" {
-  export CONTEXT=$(load_fixture "simple-public-routes")
-
-  # Step 1: Build context
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  # Step 2: Build public httproute
-  export VISIBILITY="public"
-  bash "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  # Step 3: Build private httproute (should create marker)
-  export VISIBILITY="private"
-  bash "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  # Verify outputs
-  assert_file_exists "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-public.yaml"
-  assert_file_not_exists "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-private.yaml"
-  assert_file_exists "$OUTPUT_DIR/.httproute-private-deleted"
-
-  # Verify public HTTPRoute content
-  assert_file_contains "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-public.yaml" "HTTPRoute"
-  assert_file_contains "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-public.yaml" "api.edenred.nullimplementation.com"
-}
-
-@test "integration: complete workflow with public and private routes" {
-  export CONTEXT=$(load_fixture "public-and-private-routes")
-
-  # Build context
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  # Build httproutes
-  export VISIBILITY="public"
-  bash "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  export VISIBILITY="private"
-  bash "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  # Verify all resources created
-  assert_file_exists "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-public.yaml"
-  assert_file_exists "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-private.yaml"
-
-  # Verify no marker files (all resources should be created)
-  assert_file_not_exists "$OUTPUT_DIR/.httproute-public-deleted"
-  assert_file_not_exists "$OUTPUT_DIR/.httproute-private-deleted"
-
-  # Verify content
-  assert_file_contains "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-public.yaml" "api.edenred.nullimplementation.com"
-  assert_file_contains "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-private.yaml" "api-private.edenred.nullimplementation.com"
-}
-
-@test "integration: workflow with authorization disabled creates cleanup markers" {
-  export CONTEXT=$(load_fixture "authorization-disabled")
-
-  # Build context
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  # Build httproutes
-  export VISIBILITY="public"
-  bash "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  export VISIBILITY="private"
-  bash "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  # Verify httproutes created
-  assert_file_exists "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-public.yaml"
-  assert_file_exists "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-private.yaml"
-}
-
-@test "integration: apply step handles markers and resources correctly" {
-  export CONTEXT=$(load_fixture "simple-public-routes")
-
-  # Build context
-  source "$SERVICE_PATH/scripts/istio/build_context"
-
-  # Build httproutes
-  export VISIBILITY="public"
-  bash "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  export VISIBILITY="private"
-  bash "$SERVICE_PATH/scripts/istio/build_httproute"
-
-  # Run apply
-  run bash "$SERVICE_PATH/scripts/common/apply"
-
+@test "integration: create renders one route per scope, on the gateway of its visibility" {
+  run run_create
   assert_success
 
-  # Should detect and process markers
-  assert_output --partial "Private HTTPRoute marked for deletion"
-
-  # Should apply the public httproute
-  assert_output --partial "Applying 1 resources"
+  [[ "$(yq '.spec.parentRefs[0].name' "$OUTPUT_DIR/apply/httproute-svc-1-public-10.yaml")" == "gateway-public" ]]
+  [[ "$(yq '.spec.parentRefs[0].name' "$OUTPUT_DIR/apply/httproute-svc-1-private-30.yaml")" == "gateway-private" ]]
+  [[ "$(yq '.spec.hostnames[0]' "$OUTPUT_DIR/apply/httproute-svc-1-private-30.yaml")" == "bo.internal.example" ]]
 }
 
-@test "integration: all resources have correct labels for management" {
-  export CONTEXT=$(load_fixture "public-and-private-routes")
+@test "integration: every routed request has exactly one policy admitting its groups" {
+  run run_create
+  assert_success
 
-  # Build context
-  source "$SERVICE_PATH/scripts/istio/build_context"
+  routes=$(for f in "$OUTPUT_DIR"/apply/httproute-*.yaml; do yq -o=json '.' "$f"; done | jq -s -c \
+    '[.[] | .spec.hostnames[0] as $h | .spec.rules[].matches[] | {h: $h, m: .method, t: .path.type, v: .path.value}] | sort')
+  policies=$(for f in "$OUTPUT_DIR"/apply/authorizationpolicy-*.yaml; do yq -o=json '.' "$f"; done | jq -s -c \
+    '[.[] | .spec.rules[0] as $r | {h: $r.to[0].operation.hosts[0], m: $r.to[0].operation.methods[0], p: $r.to[0].operation.paths, g: $r.when[0].values}] | sort_by(.h, .m, .p)')
 
-  # Build httproutes
-  export VISIBILITY="public"
-  bash "$SERVICE_PATH/scripts/istio/build_httproute"
+  [[ "$routes" == '[{"h":"bo.internal.example","m":"GET","t":"Exact","v":"/reports"},{"h":"prod.example.com","m":"GET","t":"PathPrefix","v":"/files"},{"h":"prod.example.com","m":"GET","t":"RegularExpression","v":"/orders/[^/]+"},{"h":"prod.example.com","m":"POST","t":"RegularExpression","v":"/orders/[^/]+"}]' ]]
+  [[ "$policies" == '[{"h":"bo.internal.example","m":"GET","p":["/reports"],"g":["finance"]},{"h":"prod.example.com","m":"GET","p":["/files","/files/*"],"g":["admin"]},{"h":"prod.example.com","m":"GET","p":["/orders/{*}"],"g":["admin","ops"]},{"h":"prod.example.com","m":"POST","p":["/orders/{*}"],"g":["admin","ops"]}]' ]]
+}
 
-  export VISIBILITY="private"
-  bash "$SERVICE_PATH/scripts/istio/build_httproute"
+@test "integration: the baseline keeps other hosts reachable on both gateways" {
+  run run_create
+  assert_success
 
-  # Verify all resources have required labels
-  assert_file_contains "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-public.yaml" "nullplatform.com/managed-by: endpoint-exposer"
-  assert_file_contains "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-private.yaml" "nullplatform.com/managed-by: endpoint-exposer"
+  grep -q "apply -f -" "$KUBECTL_CALLS"
+  assert_output --partial "Baseline on gateway-public admits every host except prod.example.com"
+  assert_output --partial "Baseline on gateway-private admits every host except bo.internal.example"
+}
 
-  assert_file_contains "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-public.yaml" "nullplatform.com/service-id:"
-  assert_file_contains "$OUTPUT_DIR/httproute-fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd-private.yaml" "nullplatform.com/service-id:"
+@test "integration: the shared RequestAuthentication is created for the pool's issuer" {
+  run run_create
+  assert_success
+
+  grep -q "create -f .*request-authentication-public.yaml.tmp" "$KUBECTL_CALLS"
+  grep -q "create -f .*request-authentication-private.yaml.tmp" "$KUBECTL_CALLS"
+}
+
+@test "integration: every resource carries the service labels used for cleanup" {
+  run run_create
+  assert_success
+
+  for f in "$OUTPUT_DIR"/apply/*.yaml; do
+    [[ "$(yq '.metadata.labels["nullplatform.com/service-id"]' "$f")" == "svc-1" ]]
+    [[ "$(yq '.metadata.labels["nullplatform.com/managed-by"]' "$f")" == "http-route-access-control" ]]
+  done
 }

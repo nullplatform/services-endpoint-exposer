@@ -1,0 +1,44 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Deletes the service's HTTPRoutes and ALLOW AuthorizationPolicies that this
+# run didn't render (scopes or routes removed on update, resources named by an
+# earlier version). Runs after apply, so what stays is already updated: the
+# gateway is never left without the service's policies in between.
+#
+# build_httproute and build_allow_policies list what they render in
+# $OUTPUT_DIR/.httproute-expected and .authz-expected. A missing list means
+# that step didn't run, so nothing of that kind is deleted.
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+LABELS="nullplatform.com/service-id=${SERVICE_ID},nullplatform.com/managed-by=http-route-access-control"
+
+prune() {
+  local kind="$1" namespace="$2" expected_file="$3"
+
+  if [[ ! -f "$expected_file" ]]; then
+    echo "No list of rendered ${kind}s at $expected_file, skipping prune"
+    return 0
+  fi
+
+  local existing name
+  existing=$(kubectl get "$kind" -n "$namespace" -l "$LABELS" -o jsonpath='{.items[*].metadata.name}')
+  for name in $existing; do
+    if ! grep -qxF "$name" "$expected_file"; then
+      kubectl delete "$kind" "$name" -n "$namespace" --ignore-not-found
+      echo "✅ Deleted stale $kind: $name"
+    fi
+  done
+}
+
+echo "=== Pruning stale resources for service $SERVICE_ID ==="
+
+prune httproute "$K8S_NAMESPACE" "$OUTPUT_DIR/.httproute-expected"
+
+if [[ "${AUTH_TYPE:-}" == "aws-cognito" ]]; then
+  prune authorizationpolicy "$GATEWAY_NAMESPACE" "$OUTPUT_DIR/.authz-expected"
+fi
+
+echo "=== Prune complete ==="

@@ -16,13 +16,18 @@ case "$SERVICE_ACTION_TYPE" in
     ;;
 esac
 
-INGRESS_TYPE="${INGRESS_TYPE:-alb}"
+INGRESS_TYPE="${INGRESS_TYPE:-istio}"
 
 echo "INGRESS_TYPE is set to '$INGRESS_TYPE'"
 
 WORKFLOW_PATH="$SERVICE_PATH/workflows/$INGRESS_TYPE/$ACTION_TO_EXECUTE.yaml"
 OVERRIDES_WORKFLOW_PATH="$OVERRIDES_PATH/workflows/$INGRESS_TYPE/$ACTION_TO_EXECUTE.yaml"
 VALUES_PATH="$SERVICE_PATH/values.yaml"
+
+if [[ ! -f "$WORKFLOW_PATH" ]]; then
+  echo "ERROR: links are not supported by this service (no workflow at $WORKFLOW_PATH)"
+  exit 1
+fi
 
 CMD="np service workflow exec --workflow $WORKFLOW_PATH --values $VALUES_PATH"
 

@@ -56,12 +56,28 @@ steps:
     file: "$SERVICE_PATH/scripts/common/manage_policies"
     configuration:
       ACTION: "apply"
+  - name: "open gateway baseline"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
+    configuration:
+      BASELINE_INCLUDE_RENDERED: "true"
   - name: apply
     type: script
     file: "$SERVICE_PATH/scripts/common/apply"
     configuration:
       ACTION: apply
       DRY_RUN: false
+  # Again after apply: a delete running at the same time may have removed this
+  # service's issuer from the shared RequestAuthentication. Idempotent.
+  - name: "ensure request authentication"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/build_request_authentication"
+  - name: "prune stale resources"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/prune_stale_resources"
+  - name: "sync gateway baseline"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
   - name: "store service results"
     type: script
     file: "$SERVICE_PATH/scripts/np/update_service_results"

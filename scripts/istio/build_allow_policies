@@ -15,13 +15,19 @@ if [[ -z "$APPLICATION_ID" || "$APPLICATION_ID" == "null" ]]; then
   exit 1
 fi
 
+# Names of the policies this run renders. prune_allow_policies (after apply)
+# deletes the service's policies that aren't listed, so an update never leaves
+# the gateway without the service's policies in between.
+EXPECTED_POLICIES_FILE="$OUTPUT_DIR/.authz-expected"
+: > "$EXPECTED_POLICIES_FILE"
+
 NUM_ROUTES=$(echo "$ROUTES_JSON" | jq 'length')
 if [[ "$NUM_ROUTES" -eq 0 ]]; then
   echo "No routes configured, skipping AuthorizationPolicy generation"
-  exit 0
+  return 0 2>/dev/null || exit 0
 fi
 
-SCOPES_JSON=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq '.results // []')
+SCOPES_JSON=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --all --format json | jq '.results // []')
 
 # Expand routes to {scope, method, path, visibility, groups} tuples,
 # then merge by (scope+method+path) taking the union of groups.
@@ -36,7 +42,7 @@ MERGED_TUPLES=$(echo "$ROUTES_JSON" | jq -c '
       end
     ) as $groups |
     # Expand one entry per method
-    ($route.methods // (if $route.method then [$route.method] else ["GET"] end)) | .[] |
+    (($route.methods // (if $route.method then [$route.method] else [] end)) | if length == 0 then [""] else . end) | .[] |
     {
       scope:      $route.scope,
       path:       $route.path,
@@ -88,6 +94,15 @@ for i in $(seq 0 $((NUM_TUPLES - 1))); do
     GATEWAY_SUFFIX="public"
   fi
 
+  # Same conversion as the HTTPRoute (paths.jq), so the policy admits exactly
+  # the requests the route sends to the scope.
+  PATH_SPEC=$(jq -nc --arg p "$ROUTE_PATH" -L "$SERVICE_PATH/scripts/istio" 'include "paths"; $p | path_spec')
+  if [[ "$(echo "$PATH_SPEC" | jq -r '.error // ""')" != "" ]]; then
+    echo "WARNING: skipping $METHOD $ROUTE_PATH: $(echo "$PATH_SPEC" | jq -r .error)"
+    continue
+  fi
+  POLICY_PATHS=$(echo "$PATH_SPEC" | jq -c '.policy')
+
   SERVICE_ID_SHORT="${SERVICE_ID:0:8}"
   ROUTE_HASH=$(echo "${SCOPE_DOMAIN}${METHOD}${ROUTE_PATH}" | md5 2>/dev/null || echo "${SCOPE_DOMAIN}${METHOD}${ROUTE_PATH}" | md5sum | cut -c1-8)
   ROUTE_HASH="${ROUTE_HASH:0:8}"
@@ -100,11 +115,11 @@ for i in $(seq 0 $((NUM_TUPLES - 1))); do
     --arg gateway_namespace "$GATEWAY_NAMESPACE" \
     --arg service_id        "$SERVICE_ID" \
     --arg host              "$SCOPE_DOMAIN" \
-    --arg path              "$ROUTE_PATH" \
+    --argjson paths         "$POLICY_PATHS" \
     --arg method            "$METHOD" \
     --argjson groups        "$GROUPS_ARRAY" \
     '{name: $name, gateway_name: $gateway_name, gateway_namespace: $gateway_namespace,
-      service_id: $service_id, host: $host, path: $path, method: $method, groups: $groups}' \
+      service_id: $service_id, host: $host, paths: $paths, method: $method, groups: $groups}' \
     > "$CONTEXT_FILE"
 
   POLICY_FILE="$OUTPUT_DIR/authorizationpolicy-${POLICY_NAME}.yaml"
@@ -112,6 +127,7 @@ for i in $(seq 0 $((NUM_TUPLES - 1))); do
     -f "$SERVICE_PATH/templates/istio/authorizationpolicy.yaml.tpl" \
     -o "$POLICY_FILE"
   rm "$CONTEXT_FILE"
+  echo "hrac-${POLICY_NAME}" >> "$EXPECTED_POLICIES_FILE"
 
   GROUPS_DISPLAY=$(echo "$GROUPS_ARRAY" | jq -r 'join(", ")')
   echo "✅ AuthorizationPolicy generated: hrac-${POLICY_NAME} (${METHOD} ${ROUTE_PATH} on ${SCOPE_DOMAIN} → [${GROUPS_DISPLAY}])"
