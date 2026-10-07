@@ -27,6 +27,11 @@ prune() {
   existing=$(kubectl get "$kind" -n "$namespace" -l "$LABELS" -o jsonpath='{.items[*].metadata.name}')
   for name in $existing; do
     if ! grep -qxF "$name" "$expected_file"; then
+      if [[ "$kind" == "authorizationpolicy" ]]; then
+        # sync_gateway_baseline only drops hosts that a run removed.
+        kubectl get authorizationpolicy "$name" -n "$namespace" -o json \
+          | jq -r '.spec.rules[]?.to[]?.operation.hosts[]?' >> "$OUTPUT_DIR/.authz-removed-hosts" || true
+      fi
       kubectl delete "$kind" "$name" -n "$namespace" --ignore-not-found
       echo "✅ Deleted stale $kind: $name"
     fi

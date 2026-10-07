@@ -16,6 +16,9 @@ if [[ -z "$POLICIES" ]]; then
 fi
 
 for POLICY_NAME in $POLICIES; do
+  # sync_gateway_baseline only drops hosts that a run removed.
+  kubectl get authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE" -o json \
+    | jq -r '.spec.rules[]?.to[]?.operation.hosts[]?' >> "$OUTPUT_DIR/.authz-removed-hosts" || true
   kubectl delete authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE"
   echo "✅ Deleted AuthorizationPolicy: $POLICY_NAME"
 done

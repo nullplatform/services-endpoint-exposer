@@ -102,7 +102,7 @@ run_create() {
   run run_create
   assert_success
 
-  grep -q "apply -f -" "$KUBECTL_CALLS"
+  grep -q "create -f -" "$KUBECTL_CALLS"
   assert_output --partial "Baseline on gateway-public admits every host except prod.example.com"
   assert_output --partial "Baseline on gateway-private admits every host except bo.internal.example"
 }

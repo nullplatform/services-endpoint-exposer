@@ -1,12 +1,87 @@
-include:
-  - "$SERVICE_PATH/workflows/istio/create.yaml"
+# All steps are listed here on purpose instead of `include`-ing create.yaml:
+# with include, the np CLI ran create's steps only up to the last step this file
+# overrides (apply), silently skipping everything after it (ensure request
+# authentication, prune, baseline, results).
 steps:
+  - name: "find k8s namespace"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/fetch_provider_data"
+    output:
+      - name: K8S_NAMESPACE
+        type: environment
+  - name: "build context"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/build_context"
+    output:
+      - name: SERVICE_ID
+        type: environment
+      - name: SERVICE_SLUG
+        type: environment
+      - name: ACTION_ID
+        type: environment
+      - name: ACTION_NAME
+        type: environment
+      - name: ROUTES_JSON
+        type: environment
+      - name: PUBLIC_ROUTES_JSON
+        type: environment
+      - name: PRIVATE_ROUTES_JSON
+        type: environment
+      - name: K8S_NAMESPACE
+        type: environment
+      - name: APPLICATION_ID
+        type: environment
+      - name: AUTH_TYPE
+        type: environment
+      - name: COGNITO_USER_POOL_ARN
+        type: environment
+      - name: AVP_POLICY_STORE_ID
+        type: environment
+  - name: "build public httproute"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/build_httproute"
+    configuration:
+      VISIBILITY: "public"
+    output:
+      - name: HTTPROUTE_PUBLIC_FILE
+        type: file
+        file: "$OUTPUT_DIR/httproute-$SERVICE_ID-public.yaml"
+  - name: "build private httproute"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/build_httproute"
+    configuration:
+      VISIBILITY: "private"
+    output:
+      - name: HTTPROUTE_PRIVATE_FILE
+        type: file
+        file: "$OUTPUT_DIR/httproute-$SERVICE_ID-private.yaml"
   - name: "manage policies"
     type: script
     file: "$SERVICE_PATH/scripts/common/manage_policies"
     configuration:
       ACTION: "sync"
+  - name: "open gateway baseline"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
+    configuration:
+      BASELINE_INCLUDE_RENDERED: "true"
   - name: apply
+    type: script
+    file: "$SERVICE_PATH/scripts/common/apply"
     configuration:
       ACTION: apply
       DRY_RUN: false
+  # Again after apply: a delete running at the same time may have removed this
+  # service's issuer from the shared RequestAuthentication. Idempotent.
+  - name: "ensure request authentication"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/build_request_authentication"
+  - name: "prune stale resources"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/prune_stale_resources"
+  - name: "sync gateway baseline"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
+  - name: "store service results"
+    type: script
+    file: "$SERVICE_PATH/scripts/np/update_service_results"
