@@ -12,6 +12,7 @@ spec:
   jwtRules:
     - issuer: {{ .issuer }}
       jwksUri: {{ .jwks_uri }}
+      forwardOriginalToken: true
 {{- if .cookie_name }}
       fromCookies:
         - "{{ .cookie_name }}"
