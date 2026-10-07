@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.5.0...v0.6.0) (2026-10-07)
+
+
+### Features
+
+* forward the original JWT to backends behind the Istio gateway ([e296932](https://github.com/nullplatform/services-endpoint-exposer/commit/e2969326cdebabb056f1d49fb2281a2bda182697))
+* forward the original JWT to backends behind the Istio gateway ([5985933](https://github.com/nullplatform/services-endpoint-exposer/commit/59859335ebb55f1a2f78e9d6b68de9fdd5af748d))
+
 ## [0.5.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.4.1...v0.5.0) (2026-10-06)
 
 
