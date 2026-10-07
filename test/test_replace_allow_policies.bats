@@ -30,7 +30,7 @@ teardown() { rm -rf "$TEST_TEMP_DIR"; }
   run bash "$SERVICE_PATH/scripts/istio/replace_allow_policies"
 
   assert_success
-  [[ "$(grep -nE '^(apply|delete)' "$KUBECTL_CALLS" | cut -d' ' -f1-3 | tr '\n' '|')" == *"apply -f"*"delete authorizationpolicy hrac-stale"* ]]
+  [[ "$(grep -E '^(apply|delete)' "$KUBECTL_CALLS" | cut -d' ' -f1-3 | tr '\n' '|')" == *"apply -f"*"delete authorizationpolicy hrac-stale"* ]]
   ! grep -q "delete authorizationpolicy hrac-keep" "$KUBECTL_CALLS"
   grep -qx "old.example.com" "$OUTPUT_DIR/.authz-removed-hosts"
 }
