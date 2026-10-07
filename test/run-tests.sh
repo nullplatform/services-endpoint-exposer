@@ -50,6 +50,7 @@ TEST_FILES=(
   "test_gateway_baseline.bats"
   "test_build_rule.bats"
   "test_sync_exposer.bats"
+  "test_replace_allow_policies.bats"
   "test_integration.bats"
 )
 
