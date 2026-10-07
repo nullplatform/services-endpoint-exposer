@@ -48,6 +48,8 @@ TEST_FILES=(
   "test_authorization_policy.bats"
   "test_apply_cleanup.bats"
   "test_gateway_baseline.bats"
+  "test_build_rule.bats"
+  "test_sync_exposer.bats"
   "test_integration.bats"
 )
 
