@@ -101,8 +101,7 @@ else
     SCOPE_ROUTES_JSON=$(echo "$ALL_VISIBILITY_ROUTES_JSON" | jq -c --arg s "$SCOPE_SLUG" '[.[] | select(.scope == $s)]')
 
     # Backends of the scope: its current deployment, or both sides of a
-    # blue/green switch. A scope without a deployment yet gets rules without
-    # backendRefs, which the gateway answers with 404.
+    # blue/green switch.
     export SCOPE_ID
     source "$SERVICE_PATH/scripts/istio/build_rule"
     BACKENDS_JSON=$(echo "$SCOPE_RULE" | jq -c '
@@ -127,6 +126,16 @@ else
       | unique')
     echo "$SCOPE_ROUTES_JSON" | jq -r -L "$SERVICE_PATH/scripts/istio" 'include "paths";
       .[] | (.path | path_spec) as $spec | select($spec.error) | "WARNING: skipping route: \($spec.error)"'
+
+    # A scope without a deployment gets no HTTPRoute: Istio answers a rule
+    # without backends with 500, while a request no route matches gets 404.
+    # The deploy sync (initial workflow) adds the routes on its first deploy;
+    # the policies are rendered anyway, so the routes stay protected.
+    if [[ "$(echo "$BACKENDS_JSON" | jq 'length')" -eq 0 ]]; then
+      echo "Scope '$SCOPE_SLUG' has no deployment yet: no HTTPRoute until its first deploy (requests get 404)"
+      rm -f "$HTTPROUTE_FILE"
+      continue
+    fi
 
     NUM_MATCHES=$(echo "$MATCHES_JSON" | jq 'length')
     if [[ "$NUM_MATCHES" -eq 0 ]]; then

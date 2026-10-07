@@ -22,6 +22,7 @@ setup() {
   # Scope 10 has a deployment (service d-10-100), scope 20 doesn't.
   export NP_SCOPES='[{"id": 10, "slug": "prod", "domain": "prod.example.com"},
                      {"id": 20, "slug": "staging", "domain": "staging.example.com"}]'
+  export NP_ACTIVE='{"10": 100}'
   export K8S_SERVICES='{"items": [{"metadata": {"name": "d-10-100"},
     "spec": {"selector": {"scope_id": "10", "deployment_id": "100"}, "ports": [{"port": 8080}]}}]}'
 
@@ -31,7 +32,7 @@ case "$1 $2" in
   "scope list") echo "{\"results\": $NP_SCOPES}" ;;
   "scope read")
     id=$(echo "$*" | sed -E 's/.*--id ([0-9]+).*/\1/')
-    echo "$NP_SCOPES" | jq --argjson id "$id" 'first(.[] | select(.id == $id)) + {active_deployment: (if $id == 10 then 100 else null end), in_progress_deployment: null}' ;;
+    echo "$NP_SCOPES" | jq --argjson id "$id" --argjson active "$NP_ACTIVE" 'first(.[] | select(.id == $id)) + {active_deployment: $active[$id|tostring], in_progress_deployment: null}' ;;
 esac
 EOF
   cat > "$TEST_TEMP_DIR/kubectl" << 'EOF'
@@ -52,11 +53,16 @@ route_file() { echo "$OUTPUT_DIR/httproute-svc-1-$1.yaml"; }
     {"methods": ["GET"], "path": "/health", "scope": "staging", "groups": ["admin"]}
   ]'
   export ROUTES_JSON="$PUBLIC_ROUTES_JSON"
+  export NP_ACTIVE='{"10": 100, "20": 200}'
+  export K8S_SERVICES='{"items": [
+    {"metadata": {"name": "d-10-100"}, "spec": {"selector": {"scope_id": "10", "deployment_id": "100"}, "ports": [{"port": 8080}]}},
+    {"metadata": {"name": "d-20-200"}, "spec": {"selector": {"scope_id": "20", "deployment_id": "200"}, "ports": [{"port": 8080}]}}]}'
 
   run bash "$SERVICE_PATH/scripts/istio/build_httproute"
 
   assert_success
   [[ "$(yq -o=json '.spec.hostnames' "$(route_file public-10)" | jq -c .)" == '["prod.example.com"]' ]]
+  [[ "$(yq '.spec.rules[0].backendRefs[0].name' "$(route_file public-20)")" == "d-20-200" ]]
   [[ "$(yq -o=json '.spec.hostnames' "$(route_file public-20)" | jq -c .)" == '["staging.example.com"]' ]]
   [[ "$(yq '.metadata.name' "$(route_file public-10)")" == "api-svc-1-public-10" ]]
   [[ "$(sort "$OUTPUT_DIR/.httproute-expected" | tr '\n' ' ')" == "api-svc-1-public-10 api-svc-1-public-20 " ]]
@@ -95,14 +101,16 @@ route_file() { echo "$OUTPUT_DIR/httproute-svc-1-$1.yaml"; }
      '["Exact /api","PathPrefix /api","RegularExpression /items/[^/]+","RegularExpression /users/[^/]+"]' ]]
 }
 
-@test "build_httproute: a scope without a deployment gets rules without backends (404)" {
+@test "build_httproute: a scope without a deployment gets no HTTPRoute (404 until its first deploy)" {
   export PUBLIC_ROUTES_JSON='[{"methods": ["GET"], "path": "/health", "scope": "staging", "groups": ["admin"]}]'
   export ROUTES_JSON="$PUBLIC_ROUTES_JSON"
 
   run bash "$SERVICE_PATH/scripts/istio/build_httproute"
 
   assert_success
-  [[ "$(yq -o=json '.spec.rules' "$(route_file public-20)" | jq -c '[.[] | has("backendRefs")]')" == '[false]' ]]
+  assert_output --partial "Scope 'staging' has no deployment yet"
+  assert_file_not_exists "$(route_file public-20)"
+  ! grep -q "public-20" "$OUTPUT_DIR/.httproute-expected"
 }
 
 @test "build_httproute: unsupported wildcards are skipped with a warning" {
