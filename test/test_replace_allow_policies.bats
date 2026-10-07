@@ -15,7 +15,7 @@ setup() {
 #!/bin/bash
 echo "$*" >> "$KUBECTL_CALLS"
 case "$1" in
-  get) if [[ "$*" == *"-o json"* ]]; then echo '{"spec": {"rules": [{"to": [{"operation": {"hosts": ["old.example.com"]}}]}]}}'; else echo -n "hrac-keep hrac-stale"; fi ;;
+  get) if [[ " $* " == *" -o json "* ]]; then echo '{"spec": {"rules": [{"to": [{"operation": {"hosts": ["old.example.com"]}}]}]}}'; else echo -n "hrac-keep hrac-stale"; fi ;;
 esac
 exit 0
 EOF2
