@@ -58,9 +58,32 @@ mkdir -p "$OUTPUT_DIR"
 
 ENV_DIMENSION=$(echo "$CONTEXT" | jq -r '.service.dimensions.environment // ""')
 ENV_SUFFIX=$(echo "$ENV_DIMENSION" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
-: "${ENV_SUFFIX:?service.dimensions.environment is required}"
+
+if [[ "$AUTH_TYPE" != "none" ]]; then
+  : "${ENV_SUFFIX:?service.dimensions.environment is required}"
+
+  # groups is optional in the spec so AUTH_TYPE=none installations can leave it
+  # empty. With auth enabled a route without groups would get an unconditional
+  # ALLOW policy, i.e. be exposed without any check, so refuse it instead.
+  # Deletes are exempt so a service can always be removed.
+  if [[ "$(echo "$CONTEXT" | jq -r '.type // ""')" != "delete" ]]; then
+    ROUTES_WITHOUT_GROUPS=$(echo "$ROUTES_JSON" | jq -r '
+      .[]
+      | select(.groups // "" | if type == "array" then length == 0 else gsub("[ ,]"; "") == "" end)
+      | "  - \((.methods // [.method // "GET"]) | join(",")) \(.path)"')
+    if [[ -n "$ROUTES_WITHOUT_GROUPS" ]]; then
+      echo "ERROR: AUTH_TYPE=$AUTH_TYPE requires at least one authorized group per route. Routes without groups:" >&2
+      echo "$ROUTES_WITHOUT_GROUPS" >&2
+      exit 1
+    fi
+  fi
+fi
 
 case "$AUTH_TYPE" in
+  none)
+    COGNITO_USER_POOL_ARN=""
+    AVP_POLICY_STORE_ARN=""
+    ;;
   aws-avp)
     : "${OPA_PROVIDER_NAME:?OPA_PROVIDER_NAME is required when AUTH_TYPE=aws-avp}"
     AVP_VAR="AVP_POLICY_STORE_ARN_${ENV_SUFFIX}"
@@ -75,7 +98,7 @@ case "$AUTH_TYPE" in
     AVP_POLICY_STORE_ARN=""
     ;;
   *)
-    echo "ERROR: AUTH_TYPE must be 'aws-avp' or 'aws-cognito', got: '$AUTH_TYPE'" >&2
+    echo "ERROR: AUTH_TYPE must be 'aws-avp', 'aws-cognito' or 'none', got: '$AUTH_TYPE'" >&2
     exit 1
     ;;
 esac
