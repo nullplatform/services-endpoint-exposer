@@ -67,7 +67,8 @@ for ((i=0; i<NUM_ROUTES; i++)); do
   # `jq -R '[.]'` re-read the already-JSON-encoded string ("GET") as raw text and
   # produced ["\"GET\""], which rendered as `method: '"GET"'` and made the
   # HTTPRoute invalid ("Invalid value: null").
-  METHODS_JSON=$(echo "$ROUTE" | jq -c '.methods // (if .method then [.method] else [] end)')
+  # "ALL" means no method filter, which is the empty-array case below.
+  METHODS_JSON=$(echo "$ROUTE" | jq -c '.methods // (if .method then [.method] else [] end) | if index("ALL") then [] else . end')
 
   echo "Methods: $METHODS_JSON"
   echo "Path: $ROUTE_PATH"

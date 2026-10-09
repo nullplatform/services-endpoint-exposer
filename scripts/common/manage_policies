@@ -4,8 +4,8 @@ set -euo pipefail
 
 # Delegates to AVP or Istio-JWT policy management based on AUTH_TYPE.
 # Required env vars:
-#   AUTH_TYPE  - "aws-avp" or "aws-cognito"
-#   ACTION     - "apply" (create/update) or "delete"
+#   AUTH_TYPE  - "aws-avp", "aws-cognito" or "none"
+#   ACTION     - "apply" (create), "sync" (update) or "delete"
 
 ACTION="${ACTION:-apply}"
 
@@ -58,8 +58,37 @@ case "$AUTH_TYPE" in
     esac
     ;;
 
+  none)
+    # No JWT is validated, so a cognito:groups condition could never match.
+    # Dropping groups makes build_allow_policies emit unconditional ALLOW
+    # policies: only the declared routes stay reachable, without auth. They
+    # are still needed because once any ALLOW policy targets the gateway,
+    # Istio denies every request that matches none of them.
+    ROUTES_JSON=$(echo "$ROUTES_JSON" | jq -c 'map(del(.groups))')
+    case "$ACTION" in
+      apply)
+        source "$SERVICE_PATH/scripts/istio/build_allow_policies"
+        source "$SERVICE_PATH/scripts/np/update_service_results"
+        ;;
+      sync)
+        source "$SERVICE_PATH/scripts/istio/delete_allow_policies"
+        source "$SERVICE_PATH/scripts/istio/build_allow_policies"
+        source "$SERVICE_PATH/scripts/np/update_service_results"
+        ;;
+      delete)
+        # The cognito-jwt-* RequestAuthentications are shared, so they are
+        # not this service's to remove.
+        source "$SERVICE_PATH/scripts/istio/delete_allow_policies"
+        ;;
+      *)
+        echo "ERROR: Unknown ACTION='$ACTION'"
+        exit 1
+        ;;
+    esac
+    ;;
+
   *)
-    echo "ERROR: Unknown AUTH_TYPE='$AUTH_TYPE' (expected: aws-avp | aws-cognito)"
+    echo "ERROR: Unknown AUTH_TYPE='$AUTH_TYPE' (expected: aws-avp | aws-cognito | none)"
     exit 1
     ;;
 esac

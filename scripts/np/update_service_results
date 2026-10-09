@@ -41,7 +41,7 @@ else
     --argjson routes "$ROUTES_WITH_SUMMARY" \
     '(.notification.parameters // .parameters // {}) + {routes: $routes}')
 
-  echo "Storing service results (aws-cognito)"
+  echo "Storing service results ($AUTH_TYPE)"
   np service action update --results "$RESULTS"
 
   np service patch --id "$SERVICE_ID" \

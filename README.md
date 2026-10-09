@@ -18,6 +18,13 @@ Route visibility is resolved automatically from the scope's own `visibility` att
 |---|---|
 | `aws-cognito` | Istio validates Cognito JWT; AuthorizationPolicies check `cognito:groups` claims |
 | `aws-avp` | Amazon Verified Permissions policy store controls access |
+| `none` | No authentication. Only the declared routes are reachable, but anyone can call them |
+
+#### `AUTH_TYPE=none`
+
+Use it to expose specific endpoints of an API without authentication. Each route still gets an `ALLOW` AuthorizationPolicy (host + path + method, with no group condition), because once any `ALLOW` policy targets a gateway, Istio denies every request that matches none of them. So the declared routes are open, and the rest of the scope's endpoints stay closed on that gateway.
+
+In this mode `Authorized Groups` is ignored and can be left empty, and no `COGNITO_*`/`AVP_*` variables or `environment` dimension are needed. No RequestAuthentication is created or deleted.
 
 ---
 
@@ -27,10 +34,10 @@ When creating or updating the service, developers configure one or more routes:
 
 | Field | Description |
 |---|---|
-| **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) |
+| **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`), or `ALL` to match any method. `ALL` overrides any other verb selected on the same route |
 | **Path** | Route path. Supports exact (`/api/users`), parameterized (`/api/users/{id}`), and wildcard (`/api/users/*`) |
 | **Scope** | nullplatform scope slug that backs this route |
-| **Authorized Groups** | Comma-separated list of groups allowed to call this route (e.g. `admin, read-only`) |
+| **Authorized Groups** | Comma-separated list of groups allowed to call this route (e.g. `admin, read-only`). Required with `aws-cognito`/`aws-avp`: create and update fail if a route has none. Ignored with `none` |
 
 Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below).
 
@@ -85,7 +92,7 @@ Auth configuration is resolved at **runtime from the agent's environment**, not 
 
 | Variable | Description | Example |
 |---|---|---|
-| `AUTH_TYPE` | Authorization scheme for the entire installation | `aws-cognito` |
+| `AUTH_TYPE` | Authorization scheme for the entire installation: `aws-cognito`, `aws-avp` or `none` | `aws-cognito` |
 | `INGRESS_TYPE` | Must be `istio` | `istio` |
 
 #### Required per environment — `aws-cognito`
@@ -186,7 +193,7 @@ Without this override wired into the scope's channel, HTTPRoutes will point to s
 
 ## How auth resolution works
 
-On every action (create / update / delete) the service:
+On every action (create / update / delete) the service, unless `AUTH_TYPE=none`:
 
 1. Reads `AUTH_TYPE` from the agent environment
 2. Reads `service.dimensions.environment` from the action context (e.g. `"dev"`)
