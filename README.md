@@ -34,7 +34,7 @@ When creating or updating the service, developers configure one or more routes:
 
 | Field | Description |
 |---|---|
-| **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) |
+| **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`), or `ALL` to match any method. `ALL` overrides any other verb selected on the same route |
 | **Path** | Route path. Supports exact (`/api/users`), parameterized (`/api/users/{id}`), and wildcard (`/api/users/*`) |
 | **Scope** | nullplatform scope slug that backs this route |
 | **Authorized Groups** | Comma-separated list of groups allowed to call this route (e.g. `admin, read-only`). Required with `aws-cognito`/`aws-avp`: create and update fail if a route has none. Ignored with `none` |

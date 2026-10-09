@@ -2,6 +2,7 @@
 
 # AUTH_TYPE=none: routes are exposed through unconditional ALLOW policies,
 # and the groups requirement only applies when auth is enabled.
+# The ALL verb: one AuthorizationPolicy without a methods filter.
 # np and kubectl are stubbed on PATH so the tests run without a cluster.
 
 load helpers
@@ -133,3 +134,42 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   [[ $(grep -c "requestauthentication" "$CALLS_LOG") -eq 0 ]]
 }
 
+@test "manage_policies: ALL renders a single policy without a methods filter" {
+  export AUTH_TYPE="none" ACTION="apply"
+  export CONTEXT=$(context create '[]')
+  export SERVICE_ID="fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd" APPLICATION_ID="179976948"
+  export ROUTES_JSON='[{"methods":["GET","ALL"],"path":"/api/public/*","scope":"users-prod"}]'
+
+  run bash "$SERVICE_PATH/scripts/common/manage_policies"
+
+  assert_success
+  local policies=("$OUTPUT_DIR"/authorizationpolicy-*.yaml)
+  [[ ${#policies[@]} -eq 1 ]]
+  assert_file_contains "${policies[0]}" 'paths: \["/api/public/\*"\]'
+  [[ $(grep -c "methods:" "${policies[0]}") -eq 0 ]]
+}
+
+@test "manage_policies: ALL keeps the groups condition under aws-cognito" {
+  export AUTH_TYPE="aws-cognito" ACTION="apply"
+  export COGNITO_USER_POOL_ARN="arn:aws:cognito-idp:us-east-1:123456789:userpool/us-east-1_AbCdEf"
+  export CONTEXT=$(context create '[]')
+  export SERVICE_ID="fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd" APPLICATION_ID="179976948"
+  export ROUTES_JSON='[{"methods":["ALL"],"path":"/api/admin","scope":"users-prod","groups":["admin"]}]'
+
+  run bash "$SERVICE_PATH/scripts/common/manage_policies"
+
+  assert_success
+  local policies=("$OUTPUT_DIR"/authorizationpolicy-*.yaml)
+  [[ ${#policies[@]} -eq 1 ]]
+  [[ $(grep -c "methods:" "${policies[0]}") -eq 0 ]]
+  assert_file_contains "${policies[0]}" 'cognito:groups'
+  assert_file_contains "${policies[0]}" '"admin"'
+}
+
+@test "process_routes: ALL normalizes to no method filter" {
+  # Same expression as scripts/istio/process_routes
+  local filter
+  filter=$(grep -o "jq -c '.methods.*')" "$SERVICE_PATH/scripts/istio/process_routes" | sed "s/^jq -c '//;s/')$//")
+  [[ $(echo '{"methods":["POST","ALL"]}' | jq -c "$filter") == "[]" ]]
+  [[ $(echo '{"methods":["POST"]}' | jq -c "$filter") == '["POST"]' ]]
+}

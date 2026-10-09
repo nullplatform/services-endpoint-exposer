@@ -93,6 +93,7 @@
                                 "items": {
                                     "type": "string",
                                     "enum": [
+                                        "ALL",
                                         "GET",
                                         "POST",
                                         "PUT",

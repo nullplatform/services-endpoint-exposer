@@ -35,8 +35,10 @@ MERGED_TUPLES=$(echo "$ROUTES_JSON" | jq -c '
       else (. // "") | split(",") | map(ltrimstr(" ") | rtrimstr(" ")) | map(select(. != ""))
       end
     ) as $groups |
-    # Expand one entry per method
-    ($route.methods // (if $route.method then [$route.method] else ["GET"] end)) | .[] |
+    # Expand one entry per method. "ALL" overrides any other verb and renders
+    # a policy without a methods filter.
+    ($route.methods // (if $route.method then [$route.method] else ["GET"] end)
+      | if index("ALL") then ["ALL"] else . end) | .[] |
     {
       scope:      $route.scope,
       path:       $route.path,
