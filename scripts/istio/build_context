@@ -54,7 +54,9 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
-: "${AUTH_TYPE:?AUTH_TYPE is required}"
+# Unset means no authentication. A misconfigured agent therefore exposes the
+# routes openly instead of failing, so set AUTH_TYPE explicitly to enforce auth.
+AUTH_TYPE="${AUTH_TYPE:-none}"
 
 ENV_DIMENSION=$(echo "$CONTEXT" | jq -r '.service.dimensions.environment // ""')
 ENV_SUFFIX=$(echo "$ENV_DIMENSION" | tr '[:lower:]' '[:upper:]' | tr '-' '_')

@@ -18,11 +18,11 @@ Route visibility is resolved automatically from the scope's own `visibility` att
 |---|---|
 | `aws-cognito` | Istio validates Cognito JWT; AuthorizationPolicies check `cognito:groups` claims |
 | `aws-avp` | Amazon Verified Permissions policy store controls access |
-| `none` | No authentication. Only the declared routes are reachable, but anyone can call them |
+| `none` (default) | No authentication. Only the declared routes are reachable, but anyone can call them |
 
 #### `AUTH_TYPE=none`
 
-Use it to expose specific endpoints of an API without authentication. Each route still gets an `ALLOW` AuthorizationPolicy (host + path + method, with no group condition), because once any `ALLOW` policy targets a gateway, Istio denies every request that matches none of them. So the declared routes are open, and the rest of the scope's endpoints stay closed on that gateway.
+This is the default when `AUTH_TYPE` is unset. Use it to expose specific endpoints of an API without authentication. Each route still gets an `ALLOW` AuthorizationPolicy (host + path + method, with no group condition), because once any `ALLOW` policy targets a gateway, Istio denies every request that matches none of them. So the declared routes are open, and the rest of the scope's endpoints stay closed on that gateway.
 
 In this mode `Authorized Groups` is ignored and can be left empty, and no `COGNITO_*`/`AVP_*` variables or `environment` dimension are needed. No RequestAuthentication is created or deleted.
 
@@ -92,8 +92,13 @@ Auth configuration is resolved at **runtime from the agent's environment**, not 
 
 | Variable | Description | Example |
 |---|---|---|
-| `AUTH_TYPE` | Authorization scheme for the entire installation: `aws-cognito`, `aws-avp` or `none` | `aws-cognito` |
 | `INGRESS_TYPE` | Must be `istio` | `istio` |
+
+#### Optional — global
+
+| Variable | Default | Description |
+|---|---|---|
+| `AUTH_TYPE` | `none` | Authorization scheme for the entire installation: `aws-cognito`, `aws-avp` or `none`. **Unset means no authentication**: set it explicitly on every agent that must enforce auth, or a missing variable leaves the routes open |
 
 #### Required per environment — `aws-cognito`
 

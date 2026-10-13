@@ -3,7 +3,7 @@
 set -euo pipefail
 
 CONTEXT="${CONTEXT:-${NP_ACTION_CONTEXT:-}}"
-AUTH_TYPE="${AUTH_TYPE:-aws-avp}"
+AUTH_TYPE="${AUTH_TYPE:-none}"
 
 # Compute summary for each route: "METHOD1, METHOD2 | /path | group1, group2"
 ROUTES_WITH_SUMMARY=$(echo "${ROUTES_JSON:-[]}" | jq -c '

@@ -69,6 +69,15 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   [[ "$(echo "$PUBLIC_ROUTES_JSON" | jq 'length')" == "1" ]]
 }
 
+@test "build_context: unset AUTH_TYPE defaults to none" {
+  unset AUTH_TYPE
+  export CONTEXT=$(context create "$ROUTES_NO_GROUPS")
+
+  source "$SERVICE_PATH/scripts/istio/build_context"
+
+  [[ "$AUTH_TYPE" == "none" ]]
+}
+
 @test "build_context: aws-cognito rejects routes without groups" {
   export AUTH_TYPE="aws-cognito"
   export COGNITO_USER_POOL_ARN_DEV="arn:aws:cognito-idp:us-east-1:123456789:userpool/us-east-1_AbCdEf"
@@ -172,4 +181,19 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   filter=$(grep -o "jq -c '.methods.*')" "$SERVICE_PATH/scripts/istio/process_routes" | sed "s/^jq -c '//;s/')$//")
   [[ $(echo '{"methods":["POST","ALL"]}' | jq -c "$filter") == "[]" ]]
   [[ $(echo '{"methods":["POST"]}' | jq -c "$filter") == '["POST"]' ]]
+}
+
+@test "manage_policies: unset AUTH_TYPE behaves as none" {
+  unset AUTH_TYPE
+  export ACTION="apply"
+  export CONTEXT=$(context create '[]')
+  export SERVICE_ID="fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd" APPLICATION_ID="179976948"
+  export ROUTES_JSON="$ROUTES_WITH_GROUPS"
+
+  run bash "$SERVICE_PATH/scripts/common/manage_policies"
+
+  assert_success
+  assert_output --partial "auth_type=none"
+  local policies=("$OUTPUT_DIR"/authorizationpolicy-*.yaml)
+  [[ $(grep -c "when:" "${policies[0]}") -eq 0 ]]
 }
