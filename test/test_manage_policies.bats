@@ -44,13 +44,15 @@ teardown() {
   fi
 }
 
-# context <type> <routes-json> [environment]
+# context <type> <routes-json> [environment] [stored-attributes-json]
 context() {
-  jq -n --arg type "$1" --argjson routes "$2" --arg env "${3:-}" '{
+  local attrs="${4:-}"
+  jq -n --arg type "$1" --argjson routes "$2" --arg env "${3:-}" --argjson attrs "${attrs:-"{}"}" '{
     id: "action-1", slug: "create-api", type: $type,
     parameters: {routes: $routes},
     service: {id: "fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd", slug: "api",
-              dimensions: (if $env == "" then {} else {environment: $env} end)},
+              dimensions: (if $env == "" then {} else {environment: $env} end),
+              attributes: $attrs},
     tags: {application_id: "179976948"}
   }'
 }
@@ -76,6 +78,53 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   source "$SERVICE_PATH/scripts/istio/build_context"
 
   [[ "$AUTH_TYPE" == "none" ]]
+}
+
+@test "build_context: unset AUTH_TYPE refuses to reopen a service stored with auth" {
+  unset AUTH_TYPE
+  export CONTEXT=$(context update "$ROUTES_NO_GROUPS" "" '{"auth_type":"aws-cognito"}')
+
+  run bash "$SERVICE_PATH/scripts/istio/build_context"
+
+  assert_failure
+  assert_output --partial "configured with auth: aws-cognito"
+}
+
+@test "build_context: unset AUTH_TYPE refuses a pre-existing service whose stored routes have groups" {
+  unset AUTH_TYPE
+  export CONTEXT=$(context update "$ROUTES_NO_GROUPS" "" "{\"routes\":$ROUTES_WITH_GROUPS}")
+
+  run bash "$SERVICE_PATH/scripts/istio/build_context"
+
+  assert_failure
+  assert_output --partial "its routes have authorized groups"
+}
+
+@test "build_context: unset AUTH_TYPE keeps updating a service stored as none" {
+  unset AUTH_TYPE
+  export CONTEXT=$(context update "$ROUTES_NO_GROUPS" "" "{\"auth_type\":\"none\",\"routes\":$ROUTES_NO_GROUPS}")
+
+  run bash "$SERVICE_PATH/scripts/istio/build_context"
+
+  assert_success
+}
+
+@test "build_context: unset AUTH_TYPE still deletes a service stored with auth" {
+  unset AUTH_TYPE
+  export CONTEXT=$(context delete "$ROUTES_WITH_GROUPS" "" '{"auth_type":"aws-cognito"}')
+
+  run bash "$SERVICE_PATH/scripts/istio/build_context"
+
+  assert_success
+}
+
+@test "build_context: explicit AUTH_TYPE=none may drop auth from a service stored with it" {
+  export AUTH_TYPE="none"
+  export CONTEXT=$(context update "$ROUTES_NO_GROUPS" "" '{"auth_type":"aws-cognito"}')
+
+  run bash "$SERVICE_PATH/scripts/istio/build_context"
+
+  assert_success
 }
 
 @test "build_context: aws-cognito rejects routes without groups" {
@@ -129,6 +178,7 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   local patch_call
   patch_call=$(grep "np service patch" "$CALLS_LOG")
   [[ -n "$patch_call" && "$patch_call" != *groups* ]]
+  [[ "$patch_call" == *'"auth_type": "none"'* ]]
 }
 
 @test "manage_policies: none delete removes only this service's AuthorizationPolicies" {
@@ -183,17 +233,12 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   [[ $(echo '{"methods":["POST"]}' | jq -c "$filter") == '["POST"]' ]]
 }
 
-@test "manage_policies: unset AUTH_TYPE behaves as none" {
+@test "manage_policies: fails closed when AUTH_TYPE was not resolved" {
   unset AUTH_TYPE
-  export ACTION="apply"
-  export CONTEXT=$(context create '[]')
-  export SERVICE_ID="fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd" APPLICATION_ID="179976948"
-  export ROUTES_JSON="$ROUTES_WITH_GROUPS"
+  export ACTION="apply" ROUTES_JSON="$ROUTES_WITH_GROUPS"
 
   run bash "$SERVICE_PATH/scripts/common/manage_policies"
 
-  assert_success
-  assert_output --partial "auth_type=none"
-  local policies=("$OUTPUT_DIR"/authorizationpolicy-*.yaml)
-  [[ $(grep -c "when:" "${policies[0]}") -eq 0 ]]
+  assert_failure
+  assert_output --partial "AUTH_TYPE is required"
 }

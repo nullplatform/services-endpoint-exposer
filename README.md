@@ -98,7 +98,9 @@ Auth configuration is resolved at **runtime from the agent's environment**, not 
 
 | Variable | Default | Description |
 |---|---|---|
-| `AUTH_TYPE` | `none` | Authorization scheme for the entire installation: `aws-cognito`, `aws-avp` or `none`. **Unset means no authentication**: set it explicitly on every agent that must enforce auth, or a missing variable leaves the routes open |
+| `AUTH_TYPE` | `none` | Authorization scheme for the entire installation: `aws-cognito`, `aws-avp` or `none`. Unset means no authentication for services that never had it (see below) |
+
+Leaving `AUTH_TYPE` unset never removes auth from an existing service. Each create/update stores the scheme in the service's `auth_type` attribute, and when the variable is missing, create/update **fail** for any service stored with auth (or, for services created before `auth_type` existed, whose stored routes have authorized groups). Set `AUTH_TYPE=none` explicitly to drop auth on purpose. Deletes always proceed.
 
 #### Required per environment — `aws-cognito`
 

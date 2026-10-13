@@ -3,7 +3,7 @@
 set -euo pipefail
 
 CONTEXT="${CONTEXT:-${NP_ACTION_CONTEXT:-}}"
-AUTH_TYPE="${AUTH_TYPE:-none}"
+: "${AUTH_TYPE:?AUTH_TYPE is required (resolved by build_context)}"
 
 # Compute summary for each route: "METHOD1, METHOD2 | /path | group1, group2"
 ROUTES_WITH_SUMMARY=$(echo "${ROUTES_JSON:-[]}" | jq -c '
@@ -35,7 +35,7 @@ if [[ "$AUTH_TYPE" == "aws-avp" ]]; then
   np service action update --results "$RESULTS"
 
   np service patch --id "$SERVICE_ID" \
-    --body "{\"attributes\": {\"avp_policy_store_arn\": \"$AVP_POLICY_STORE_ARN\", \"routes\": $ROUTES_WITH_SUMMARY}}"
+    --body "{\"attributes\": {\"auth_type\": \"$AUTH_TYPE\", \"avp_policy_store_arn\": \"$AVP_POLICY_STORE_ARN\", \"routes\": $ROUTES_WITH_SUMMARY}}"
 else
   RESULTS=$(echo "$CONTEXT" | jq \
     --argjson routes "$ROUTES_WITH_SUMMARY" \
@@ -45,7 +45,7 @@ else
   np service action update --results "$RESULTS"
 
   np service patch --id "$SERVICE_ID" \
-    --body "{\"attributes\": {\"routes\": $ROUTES_WITH_SUMMARY}}"
+    --body "{\"attributes\": {\"auth_type\": \"$AUTH_TYPE\", \"routes\": $ROUTES_WITH_SUMMARY}}"
 fi
 
 echo "✅ Service results stored"
