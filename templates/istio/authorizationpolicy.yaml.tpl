@@ -16,7 +16,9 @@ spec:
         - operation:
             hosts: ["{{ .host }}"]
             paths: ["{{ .path }}"]
+{{- if ne .method "ALL" }}
             methods: ["{{ .method }}"]
+{{- end }}
 {{- if gt (len .groups) 0 }}
       when:
         - key: "request.auth.claims[cognito:groups]"
