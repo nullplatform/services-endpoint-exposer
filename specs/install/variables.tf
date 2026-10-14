@@ -3,21 +3,15 @@ variable "nrn" {
   type        = string
 }
 
-variable "np_api_key" {
-  description = "API key used by the notification channels to authenticate with the nullplatform API"
-  type        = string
-  sensitive   = true
-}
-
 variable "tags_selectors" {
   description = "Map of tags used to select and filter the agent(s) that will handle this service's notification channels"
   type        = map(string)
 }
 
 variable "tofu_modules_ref" {
-  description = "Git ref (tag) of nullplatform/tofu-modules to pull the service_definition / service_definition_agent_association / scope_definition_agent_association modules from"
+  description = "Git ref (tag) of nullplatform/tofu-modules to pull the service_definition / service_definition_agent_association / scope_definition_agent_association modules from. Must be v8.6.0 or later: earlier versions require an api_key for the notification channels."
   type        = string
-  default     = "v6.2.2"
+  default     = "v8.7.0"
 }
 
 variable "repository_org" {
