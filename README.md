@@ -74,7 +74,6 @@ module "service_definition_channel_association_endpoint_exposer" {
   source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=<tofu-modules version>"
 
   nrn                           = var.nrn
-  api_key                       = var.np_api_key
   tags_selectors                = { "owner" = "my-agent", "environment" = "{$context.service.dimensions.environment}" }
   service_specification_slug    = module.service_definition_endpoint_exposer.service_specification_slug
   repository_service_spec_repo  = "nullplatform/services-endpoint-exposer"
@@ -83,6 +82,8 @@ module "service_definition_channel_association_endpoint_exposer" {
 ```
 
 Pin `<tofu-modules version>` to a real tag from [`nullplatform/tofu-modules` releases](https://github.com/nullplatform/tofu-modules/releases) — check its `CHANGELOG.md` for breaking changes before bumping.
+
+The channel takes no `api_key` (tofu-modules `v8.6.0` or later): nullplatform creates and manages its credential, an API key scoped to dispatching commands to agents. The identity running the apply must be able to assign the `controlplane:agent-dispatcher` role (`admin`, `ops` or `secops`).
 
 ### 2. Set agent environment variables
 
@@ -181,7 +182,6 @@ module "scope_definition_agent_association" {
   source                   = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/scope_definition_agent_association?ref=<tofu-modules version>"
   nrn                      = var.nrn
   tags_selectors           = var.tags_selectors
-  api_key                  = module.scope_definition_agent_association_api_key.api_key
   scope_specification_id   = var.scope_specification_id
   scope_specification_slug = var.scope_specification_slug
 
