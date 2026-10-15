@@ -1,32 +1,26 @@
 steps:
-  - name: "find k8s namespace"
+  - name: "build service context"
     type: script
-    file: "$SERVICE_PATH/scripts/istio/fetch_provider_data"
-    output:
-      - name: K8S_NAMESPACE
-        type: environment
-  - name: "build context"
-    type: script
-    file: "$SERVICE_PATH/scripts/istio/build_context"
+    file: "$SERVICE_PATH/scripts/istio/build_service_context"
+    configuration:
+      SERVICE_OPERATION: delete
     output:
       - name: SERVICE_ID
         type: environment
       - name: SERVICE_SLUG
         type: environment
-      - name: ACTION_ID
+      - name: K8S_NAMESPACE
         type: environment
       - name: AUTH_TYPE
         type: environment
-      - name: AVP_POLICY_STORE_ID
+      - name: COGNITO_USER_POOL_ARN
         type: environment
-  - name: "manage policies"
+  - name: "check active links"
     type: script
-    file: "$SERVICE_PATH/scripts/common/manage_policies"
-    configuration:
-      ACTION: "delete"
-  - name: apply
+    file: "$SERVICE_PATH/scripts/np/check_active_links"
+  - name: "delete service resources"
     type: script
-    file: "$SERVICE_PATH/scripts/common/apply"
-    configuration:
-      ACTION: delete
-      DRY_RUN: false
+    file: "$SERVICE_PATH/scripts/istio/delete_service_resources"
+  - name: "delete request authentication"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/delete_request_authentication"

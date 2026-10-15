@@ -21,7 +21,15 @@ if [[ "$NUM_ROUTES" -eq 0 ]]; then
   exit 0
 fi
 
-SCOPES_JSON=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq '.results // []')
+# Link model: the host is the domain_name of the service the link belongs to, so the
+# scope's own domain is not needed. Legacy model: each route is exposed on its scope's domain.
+DOMAIN_NAME="${DOMAIN_NAME:-}"
+LINK_ID="${LINK_ID:-}"
+
+SCOPES_JSON="[]"
+if [[ -z "$DOMAIN_NAME" ]]; then
+  SCOPES_JSON=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq '.results // []')
+fi
 
 # Expand routes to {scope, method, path, visibility, groups} tuples,
 # then merge by (scope+method+path) taking the union of groups.
@@ -67,17 +75,21 @@ for i in $(seq 0 $((NUM_TUPLES - 1))); do
   GROUPS_ARRAY=$(echo "$TUPLE" | jq -c '.groups')
   VISIBILITY=$(echo "$TUPLE" | jq -r '.visibility')
 
-  # Resolve scope → domain
-  SCOPE_ID=$(echo "$SCOPES_JSON" | jq -r --arg slug "$SCOPE_SLUG" '.[] | select(.slug == $slug) | .id')
-  if [[ -z "$SCOPE_ID" || "$SCOPE_ID" == "null" ]]; then
-    echo "WARNING: Could not resolve scope '$SCOPE_SLUG', skipping $METHOD $ROUTE_PATH"
-    continue
-  fi
+  if [[ -n "$DOMAIN_NAME" ]]; then
+    SCOPE_DOMAIN="$DOMAIN_NAME"
+  else
+    # Resolve scope → domain
+    SCOPE_ID=$(echo "$SCOPES_JSON" | jq -r --arg slug "$SCOPE_SLUG" '.[] | select(.slug == $slug) | .id')
+    if [[ -z "$SCOPE_ID" || "$SCOPE_ID" == "null" ]]; then
+      echo "WARNING: Could not resolve scope '$SCOPE_SLUG', skipping $METHOD $ROUTE_PATH"
+      continue
+    fi
 
-  SCOPE_DOMAIN=$(np scope read --id "$SCOPE_ID" --format json | jq -r '.domain // ""')
-  if [[ -z "$SCOPE_DOMAIN" || "$SCOPE_DOMAIN" == "null" ]]; then
-    echo "WARNING: Scope '$SCOPE_SLUG' (id: $SCOPE_ID) has no domain, skipping"
-    continue
+    SCOPE_DOMAIN=$(np scope read --id "$SCOPE_ID" --format json | jq -r '.domain // ""')
+    if [[ -z "$SCOPE_DOMAIN" || "$SCOPE_DOMAIN" == "null" ]]; then
+      echo "WARNING: Scope '$SCOPE_SLUG' (id: $SCOPE_ID) has no domain, skipping"
+      continue
+    fi
   fi
 
   if [[ "$VISIBILITY" == "internal" || "$VISIBILITY" == "private" ]]; then
@@ -99,12 +111,13 @@ for i in $(seq 0 $((NUM_TUPLES - 1))); do
     --arg gateway_name      "$GATEWAY_NAME" \
     --arg gateway_namespace "$GATEWAY_NAMESPACE" \
     --arg service_id        "$SERVICE_ID" \
+    --arg link_id           "$LINK_ID" \
     --arg host              "$SCOPE_DOMAIN" \
     --arg path              "$ROUTE_PATH" \
     --arg method            "$METHOD" \
     --argjson groups        "$GROUPS_ARRAY" \
     '{name: $name, gateway_name: $gateway_name, gateway_namespace: $gateway_namespace,
-      service_id: $service_id, host: $host, path: $path, method: $method, groups: $groups}' \
+      service_id: $service_id, link_id: $link_id, host: $host, path: $path, method: $method, groups: $groups}' \
     > "$CONTEXT_FILE"
 
   POLICY_FILE="$OUTPUT_DIR/authorizationpolicy-${POLICY_NAME}.yaml"

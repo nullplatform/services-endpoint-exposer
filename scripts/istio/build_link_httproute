@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# Build Link HTTPRoute: one HTTPRoute per link, on the service's domain and gateway.
+# Gateway API merges every HTTPRoute that shares a hostname, so each link owns its
+# resource and unlink only deletes its own (by the link-id label).
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+HTTPROUTE_FILE="$OUTPUT_DIR/httproute-link-$LINK_ID.yaml"
+CONTEXT_PATH="$OUTPUT_DIR/httproute-link-context-$LINK_ID.json"
+
+jq -n \
+  --arg name "$SERVICE_SLUG-link-$LINK_ID" \
+  --arg service_slug "$SERVICE_SLUG" \
+  --arg service_id "$SERVICE_ID" \
+  --arg link_id "$LINK_ID" \
+  --arg k8s_namespace "$K8S_NAMESPACE" \
+  --arg domain_name "$DOMAIN_NAME" \
+  --arg gateway_name "$GATEWAY_NAME" \
+  --arg gateway_namespace "$GATEWAY_NAMESPACE" \
+  '{
+    name: $name,
+    service_slug: $service_slug,
+    service_id: $service_id,
+    link_id: $link_id,
+    k8s_namespace: $k8s_namespace,
+    hostnames: [$domain_name],
+    gateway_name: $gateway_name,
+    gateway_namespace: $gateway_namespace
+  }' > "$CONTEXT_PATH"
+
+echo "Generating HTTPRoute for link $LINK_ID on $DOMAIN_NAME"
+gomplate -c .="$CONTEXT_PATH" \
+  -f "$SERVICE_PATH/templates/istio/httproute.yaml.tpl" \
+  -o "$HTTPROUTE_FILE"
+rm "$CONTEXT_PATH"
+
+# Fill the rules (backend resolution, blue/green weights) with the same logic as the
+# legacy model, for this link's single route.
+export HTTPROUTE_FILE
+source "$SERVICE_PATH/scripts/istio/process_routes"
+
+echo "✅ HTTPRoute created: $HTTPROUTE_FILE"

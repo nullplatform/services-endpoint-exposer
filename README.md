@@ -4,13 +4,13 @@ A nullplatform service that manages dynamic exposure of application endpoints th
 
 ## What it does
 
-Developers declare which HTTP routes they want to expose, which nullplatform scope backs each route, and which user groups are allowed to call it. The service handles the rest:
+Developers create a service for a domain, then link each application to it declaring which path it exposes, which nullplatform scope backs it, and which user groups are allowed to call it. The service handles the rest:
 
 - Creates **HTTPRoutes** (Kubernetes Gateway API v1) pointing to the right backend service
 - Creates **AuthorizationPolicies** enforcing group-based access control
 - Creates **RequestAuthentication** resources validating JWT tokens (Cognito) or delegating to AVP
 
-Route visibility is resolved automatically from the scope's own `visibility` attribute (`external` → public gateway, `internal` → private gateway).
+The gateway (public or private) is chosen on the service with its `visibility`.
 
 ### Supported auth schemes
 
@@ -23,16 +23,33 @@ Route visibility is resolved automatically from the scope's own `visibility` att
 
 ## Route configuration (developer UI)
 
-When creating or updating the service, developers configure one or more routes:
+Exposing endpoints takes two steps: a **service** owns a domain, and each **link** exposes one path of the linking application on that domain.
+
+### 1. Create the service — the domain
 
 | Field | Description |
 |---|---|
-| **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) |
-| **Path** | Route path. Supports exact (`/api/users`), parameterized (`/api/users/{id}`), and wildcard (`/api/users/*`) |
-| **Scope** | nullplatform scope slug that backs this route |
-| **Authorized Groups** | Comma-separated list of groups allowed to call this route (e.g. `admin, read-only`) |
+| **Domain name** | Hostname the paths are exposed on, e.g. `api.example.com`. No wildcards. Fixed after creation. |
+| **Visibility** | `public` attaches the domain to the public gateway, `private` to the private one. Fixed after creation. |
 
-Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below).
+On create the service validates that the selected gateway has a listener for the domain and that no other service already serves links on it, and ensures the Cognito `RequestAuthentication`. It creates no route by itself. It can only be deleted once every link is unlinked.
+
+### 2. Link an application — one path
+
+| Field | Description |
+|---|---|
+| **Path** | Path on the service's domain. Supports exact (`/api/users`), parameterized (`/api/users/:id`) and wildcard (`/api/users/*`) |
+| **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) |
+| **Scope** | Scope of the linking application that receives the traffic |
+| **Authorized Groups** | Groups allowed to call the path |
+
+Each link gets its own `HTTPRoute` (hostname = the service's domain) and `AuthorizationPolicies`, labeled `nullplatform.com/link-id`; unlink deletes exactly those. A path + method can be exposed by a single link per domain: a link that would overlap another one fails instead of being silently shadowed (Gateway API gives the oldest route the traffic). Updating a link replaces its route and prunes the policies it no longer needs.
+
+Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below). The domain + links model supports `AUTH_TYPE=aws-cognito` only.
+
+### Services created before the domain + links model
+
+Services that declare their routes inline (`routes` attribute, no `domain_name`) keep working: `entrypoint/service` runs them with `workflows/istio/legacy/`, and `sync_exposer` keeps their routes in sync on deploys. Their routes are no longer editable from the UI; migrate them by creating a domain service per `(domain, visibility)` they serve and one link per route, then deleting the legacy service. While both exist, the legacy `HTTPRoute` keeps the traffic (it is older), so deleting it switches traffic to the links without a gap.
 
 ---
 
@@ -156,7 +173,7 @@ module "agent" {
 
 ### 3. Register the `container-scope-override` on the target scope
 
-The `container-scope-override/` directory injects a `sync_exposer` step into scope deploy workflows (initial, blue_green, switch_traffic, finalize, rollback, delete). This keeps HTTPRoutes in sync when the underlying Kubernetes service names change during a blue/green deploy.
+The `container-scope-override/` directory injects a `sync_exposer` step into scope deploy workflows (initial, blue_green, switch_traffic, finalize, rollback, delete). This keeps HTTPRoutes in sync when the underlying Kubernetes service names change during a blue/green deploy: it re-runs the update action of every active link of the application whose scope is the one being deployed (and the update of legacy services).
 
 This mechanism only activates when the scope agent entrypoint receives `--overrides-path=` pointing to the override directory. That flag must be set on the notification channel that fires for the **target scope** — i.e. the scope specification used by apps that expose routes through this service — not on the service channel from step 1 above.
 
@@ -214,7 +231,8 @@ This means a single agent deployment can serve multiple environments, each with 
 │   ├── install/             # Reference OpenTofu implementation of the nullplatform registration (see "Installation with tofu modules" — illustrative, not meant to be sourced directly)
 │   └── requirements/aws/    # Reference OpenTofu implementation of the AVP IAM role (aws-avp only — same caveat as install/)
 ├── templates/istio/         # Kubernetes resource templates (httproute, authorizationpolicy, request-authentication)
-├── workflows/istio/         # create.yaml, update.yaml, delete.yaml, read.yaml
+├── workflows/istio/         # service: create/update/delete/read · link: link (create/update), unlink
+│   └── legacy/              # services with inline routes (pre domain + links model)
 ├── test/                    # BATS test suite
 └── container-scope-override/ # Deployment templates for override scope agent
 ```

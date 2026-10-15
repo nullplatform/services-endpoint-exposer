@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# Check Link Conflict: a (domain, path, method) can be claimed by a single link.
+# Gateway API would otherwise resolve the overlap silently in favor of the oldest
+# HTTPRoute, so the newer link would look healthy while receiving no traffic.
+#
+# HTTPRoutes of services still on the legacy model (no link-id label) only produce a
+# warning: during the migration both coexist on purpose, the legacy route keeps the
+# traffic until it is deleted.
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/path_utils"
+
+ROUTE=$(echo "$ROUTES_JSON" | jq -c '.[0]')
+ROUTE_PATH=$(echo "$ROUTE" | jq -r '.path')
+METHODS_JSON=$(echo "$ROUTE" | jq -c '.methods')
+
+PATH_TYPE_VALUE=$(detect_path_type "$ROUTE_PATH")
+MATCH_VALUE="${PATH_TYPE_VALUE#*:}"
+
+echo "Checking conflicts for $METHODS_JSON $DOMAIN_NAME$MATCH_VALUE..."
+
+if ! HTTPROUTES=$(kubectl get httproute -n "$K8S_NAMESPACE" \
+    -l "nullplatform.com/managed-by=http-route-access-control" -o json 2>&1); then
+  echo "ERROR: could not list HTTPRoutes in $K8S_NAMESPACE: $HTTPROUTES" >&2
+  exit 1
+fi
+
+# The domain belongs to the service that owns its links: a link of another service on
+# the same hostname means two services claim the domain.
+FOREIGN_SERVICES=$(echo "$HTTPROUTES" | jq -r --arg host "$DOMAIN_NAME" --arg sid "$SERVICE_ID" '
+  [.items[]
+   | select((.spec.hostnames // []) | index($host))
+   | select(.metadata.labels["nullplatform.com/link-id"] != null)
+   | .metadata.labels["nullplatform.com/service-id"]
+   | select(. != $sid)]
+  | unique | join(", ")')
+
+if [[ -n "$FOREIGN_SERVICES" ]]; then
+  echo "ERROR: $DOMAIN_NAME already serves links of service(s) $FOREIGN_SERVICES; it can't be shared by service $SERVICE_ID" >&2
+  exit 1
+fi
+
+# One line per overlapping HTTPRoute: "<name>\t<method or *>\t<link-id or empty>".
+# The link id goes last: read collapses consecutive tabs, so an empty field in the
+# middle would shift the others.
+OVERLAPS=$(echo "$HTTPROUTES" | jq -r \
+  --arg host "$DOMAIN_NAME" \
+  --arg path "$MATCH_VALUE" \
+  --arg link_id "$LINK_ID" \
+  --argjson methods "$METHODS_JSON" '
+  .items[]
+  | select((.spec.hostnames // []) | index($host))
+  | select(.metadata.labels["nullplatform.com/link-id"] != $link_id)
+  | . as $route
+  | .spec.rules[]?.matches[]?
+  | select(.path.value == $path)
+  | (.method // null) as $method
+  | select($method == null or ($methods | index($method)))
+  | [$route.metadata.name, ($method // "*"), ($route.metadata.labels["nullplatform.com/link-id"] // "")]
+  | @tsv')
+
+CONFLICT=false
+while IFS=$'\t' read -r ROUTE_NAME METHOD OTHER_LINK_ID; do
+  [[ -z "$ROUTE_NAME" ]] && continue
+  if [[ -n "$OTHER_LINK_ID" ]]; then
+    echo "ERROR: $METHOD $DOMAIN_NAME$MATCH_VALUE is already exposed by link $OTHER_LINK_ID (HTTPRoute $ROUTE_NAME)" >&2
+    CONFLICT=true
+  else
+    echo "WARNING: $METHOD $DOMAIN_NAME$MATCH_VALUE is also served by legacy HTTPRoute $ROUTE_NAME;" \
+      "it keeps the traffic until it is removed"
+  fi
+done <<< "$OVERLAPS"
+
+if [[ "$CONFLICT" == "true" ]]; then
+  echo "Each path and method can be exposed by a single link per domain." >&2
+  exit 1
+fi
+
+echo "No conflicts found"

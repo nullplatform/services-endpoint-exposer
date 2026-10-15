@@ -1,11 +1,14 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: {{ .service_slug }}-{{ .service_id }}-{{ .suffix }}
+  name: {{ .name }}
   namespace: {{ .k8s_namespace }}
   labels:
     nullplatform.com/managed-by: http-route-access-control
     nullplatform.com/service-id: "{{ .service_id }}"
+{{- if .link_id }}
+    nullplatform.com/link-id: "{{ .link_id }}"
+{{- end }}
     app.kubernetes.io/name: {{ .service_slug }}
 spec:
   parentRefs:

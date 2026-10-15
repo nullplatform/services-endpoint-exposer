@@ -1,0 +1,156 @@
+#!/bin/bash
+
+# Build Link Context (domain model): a link exposes one path of the linking
+# application on the domain of the service it is linked to.
+#
+#   service attributes: domain_name, visibility
+#   link attributes:    path, methods, groups, scope
+#
+# Exports ROUTES_JSON as a one-element array in the same shape the legacy model
+# uses ({path, methods, groups, scope, visibility}), so process_routes, build_rule
+# and build_allow_policies are reused unchanged.
+#
+# LINK_OPERATION (workflow configuration):
+#   apply  - link create/update: validates the route (default)
+#   delete - unlink: only identifies the link, whatever state its attributes are in
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+# The notification payload lives in $NP_ACTION_CONTEXT, wrapped as {"notification": ...}
+# and sometimes single-quoted; fall back to $CONTEXT (tests).
+CONTEXT=$(echo "${NP_ACTION_CONTEXT:-$CONTEXT}" | sed "s/^'//;s/'$//" | jq -c '.notification // .')
+
+LINK_OPERATION="${LINK_OPERATION:-apply}"
+
+SERVICE_ID=$(echo "$CONTEXT" | jq -r '.service.id // ""')
+SERVICE_SLUG=$(echo "$CONTEXT" | jq -r '.service.slug // ""')
+LINK_ID=$(echo "$CONTEXT" | jq -r '.link.id // ""')
+ACTION_ID=$(echo "$CONTEXT" | jq -r '.id // ""')
+ACTION_NAME=$(echo "$CONTEXT" | jq -r '.slug // ""')
+
+if [[ -z "$LINK_ID" ]]; then
+  echo "ERROR: link.id not found in the notification" >&2
+  exit 1
+fi
+
+K8S_NAMESPACE="${NAMESPACE_OVERRIDE:-${K8S_NAMESPACE:-nullplatform}}"
+
+# Only set OUTPUT_DIR if not already set (allows tests to override)
+if [[ -z "${OUTPUT_DIR:-}" ]]; then
+  export OUTPUT_DIR="$SERVICE_PATH/output/$SERVICE_SLUG-$SERVICE_ID/link-$LINK_ID/$ACTION_NAME-$ACTION_ID"
+fi
+mkdir -p "$OUTPUT_DIR"
+
+export SERVICE_ID
+export SERVICE_SLUG
+export LINK_ID
+export ACTION_ID
+export ACTION_NAME
+export K8S_NAMESPACE
+
+if [[ "$LINK_OPERATION" == "delete" ]]; then
+  echo "Unlink $LINK_ID from service $SERVICE_SLUG ($SERVICE_ID)"
+  return 0 2>/dev/null || exit 0
+fi
+
+# --- Service side: the domain every path of this service hangs from --------------
+
+SERVICE_JSON=$(echo "$CONTEXT" | jq -c '.service // {}')
+if [[ -z "$(echo "$SERVICE_JSON" | jq -r '.attributes.domain_name // ""')" ]]; then
+  # Link notifications don't always embed the service attributes.
+  SERVICE_JSON=$(np service read --id "$SERVICE_ID" --format json)
+fi
+
+DOMAIN_NAME=$(echo "$SERVICE_JSON" | jq -r '.attributes.domain_name // ""')
+VISIBILITY=$(echo "$SERVICE_JSON" | jq -r '.attributes.visibility // "public"')
+
+if [[ -z "$DOMAIN_NAME" ]]; then
+  echo "ERROR: service $SERVICE_ID has no domain_name. Links only expose paths on domain services;" >&2
+  echo "services that still declare their routes inline must be migrated first." >&2
+  exit 1
+fi
+
+if [[ "$VISIBILITY" == "private" ]]; then
+  GATEWAY_NAME="$PRIVATE_GATEWAY_NAME"
+else
+  GATEWAY_NAME="$PUBLIC_GATEWAY_NAME"
+fi
+
+# --- Link side: the route this link exposes ---------------------------------------
+
+# Parameters of the running action win over the stored link attributes (update).
+LINK_ATTRIBUTES_JSON=$(echo "$CONTEXT" | jq -c '(.link.attributes // {}) * (.parameters // {})')
+
+ROUTE=$(echo "$LINK_ATTRIBUTES_JSON" | jq -c \
+  --arg visibility "$VISIBILITY" \
+  --arg link_scope "$(echo "$CONTEXT" | jq -r '.link.scope.slug // ""')" '
+  {
+    path: (.path // ""),
+    methods: (.methods // (if .method then [.method] else [] end)),
+    groups: (.groups |
+      if type == "array" then .
+      elif type == "string" then split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))
+      else [] end),
+    scope: (if (.scope // "") != "" then .scope else $link_scope end),
+    visibility: (if $visibility == "private" then "internal" else "public" end)
+  }')
+
+ROUTE_PATH=$(echo "$ROUTE" | jq -r '.path')
+ROUTE_SCOPE=$(echo "$ROUTE" | jq -r '.scope')
+
+if [[ ! "$ROUTE_PATH" =~ ^/[a-zA-Z0-9_./:*{}-]*$ ]]; then
+  echo "ERROR: path '$ROUTE_PATH' must start with / (e.g. /api/users, /items/:id, /files/*)" >&2
+  exit 1
+fi
+
+INVALID_METHODS=$(echo "$ROUTE" | jq -r '
+  .methods - ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] | join(", ")')
+if [[ "$(echo "$ROUTE" | jq '.methods | length')" -eq 0 || -n "$INVALID_METHODS" ]]; then
+  echo "ERROR: methods must be a non-empty subset of GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS (invalid: '${INVALID_METHODS}')" >&2
+  exit 1
+fi
+
+# An ALLOW policy without groups would let any request through on this path.
+if [[ "$(echo "$ROUTE" | jq '.groups | length')" -eq 0 ]]; then
+  echo "ERROR: at least one authorized group is required" >&2
+  exit 1
+fi
+
+if [[ -z "$ROUTE_SCOPE" ]]; then
+  echo "ERROR: scope is required: it is the scope that receives the traffic of this path" >&2
+  exit 1
+fi
+
+# The scope belongs to the linking application, not to the one owning the service.
+APPLICATION_ID=$(echo "$CONTEXT" | jq -r '
+  ((.link.entity_nrn // "") | capture("application=(?<id>[0-9]+)").id) //
+  .tags.application_id //
+  ((.entity_nrn // "") | capture("application=(?<id>[0-9]+)").id) //
+  ""')
+
+if [[ -z "$APPLICATION_ID" ]]; then
+  echo "ERROR: could not resolve the application of link $LINK_ID" >&2
+  exit 1
+fi
+
+ROUTES_JSON=$(echo "$ROUTE" | jq -c '[.]')
+
+ENV_DIMENSION=$(echo "$CONTEXT" | jq -r --argjson service "$SERVICE_JSON" '
+  .service.dimensions.environment // .link.dimensions.environment // $service.dimensions.environment // ""')
+source "$SERVICE_PATH/scripts/istio/resolve_auth"
+
+if [[ "$AUTH_TYPE" == "aws-avp" ]]; then
+  echo "ERROR: AUTH_TYPE=aws-avp is not supported by the domain + links model yet; use aws-cognito" >&2
+  exit 1
+fi
+
+echo "Link $LINK_ID: $(echo "$ROUTE" | jq -r '.methods | join(",")') $DOMAIN_NAME$ROUTE_PATH → scope $ROUTE_SCOPE (app $APPLICATION_ID, gateway $GATEWAY_NAME)"
+
+export APPLICATION_ID
+export DOMAIN_NAME
+export VISIBILITY
+export GATEWAY_NAME
+export ROUTES_JSON
+export LINK_ATTRIBUTES_JSON

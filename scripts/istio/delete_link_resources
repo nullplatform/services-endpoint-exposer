@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# Delete Link Resources: unlink removes exactly the HTTPRoute and AuthorizationPolicies
+# of this link; other links on the same domain are untouched.
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+LABELS="nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=$LINK_ID"
+
+echo "Deleting HTTPRoute of link $LINK_ID in $K8S_NAMESPACE..."
+kubectl delete httproute -n "$K8S_NAMESPACE" -l "$LABELS" --ignore-not-found
+
+echo "Deleting AuthorizationPolicies of link $LINK_ID in $GATEWAY_NAMESPACE..."
+kubectl delete authorizationpolicy -n "$GATEWAY_NAMESPACE" -l "$LABELS" --ignore-not-found
+
+echo "✅ Link $LINK_ID resources deleted"

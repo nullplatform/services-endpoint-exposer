@@ -8,7 +8,7 @@ case "$SERVICE_ACTION_TYPE" in
   "custom")
     ACTION_TO_EXECUTE="$SERVICE_ACTION"
     ;;
-  "create")
+  "create"|"update")
     ACTION_TO_EXECUTE="link"
     ;;
   "delete")
@@ -16,7 +16,7 @@ case "$SERVICE_ACTION_TYPE" in
     ;;
 esac
 
-INGRESS_TYPE="${INGRESS_TYPE:-alb}"
+INGRESS_TYPE="${INGRESS_TYPE:-istio}"
 
 echo "INGRESS_TYPE is set to '$INGRESS_TYPE'"
 

@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# Store the normalized route on the link, plus a summary and the endpoint it exposes.
+
+set -euo pipefail
+
+ROUTE=$(echo "$ROUTES_JSON" | jq -c '.[0]')
+
+ATTRIBUTES=$(echo "$LINK_ATTRIBUTES_JSON" | jq -c \
+  --argjson route "$ROUTE" \
+  --arg domain_name "$DOMAIN_NAME" '
+  . + {
+    path: $route.path,
+    methods: $route.methods,
+    groups: $route.groups,
+    scope: $route.scope,
+    endpoint: ($domain_name + $route.path),
+    summary: (($route.methods | join(", ")) + " | " + $domain_name + $route.path + " | " + ($route.groups | join(", ")))
+  }')
+
+echo "Storing link $LINK_ID results: $(echo "$ATTRIBUTES" | jq -r '.summary')"
+np link patch --id "$LINK_ID" --body "$(jq -n --argjson attributes "$ATTRIBUTES" '{attributes: $attributes}')"
+
+echo "✅ Link results stored"

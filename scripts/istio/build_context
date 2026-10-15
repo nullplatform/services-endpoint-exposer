@@ -54,32 +54,8 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
-: "${AUTH_TYPE:?AUTH_TYPE is required}"
-
 ENV_DIMENSION=$(echo "$CONTEXT" | jq -r '.service.dimensions.environment // ""')
-ENV_SUFFIX=$(echo "$ENV_DIMENSION" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
-: "${ENV_SUFFIX:?service.dimensions.environment is required}"
-
-case "$AUTH_TYPE" in
-  aws-avp)
-    : "${OPA_PROVIDER_NAME:?OPA_PROVIDER_NAME is required when AUTH_TYPE=aws-avp}"
-    AVP_VAR="AVP_POLICY_STORE_ARN_${ENV_SUFFIX}"
-    : "${!AVP_VAR:?${AVP_VAR} is required when AUTH_TYPE=aws-avp}"
-    AVP_POLICY_STORE_ARN="${!AVP_VAR}"
-    COGNITO_USER_POOL_ARN=""
-    ;;
-  aws-cognito)
-    COGNITO_VAR="COGNITO_USER_POOL_ARN_${ENV_SUFFIX}"
-    : "${!COGNITO_VAR:?${COGNITO_VAR} is required when AUTH_TYPE=aws-cognito}"
-    COGNITO_USER_POOL_ARN="${!COGNITO_VAR}"
-    AVP_POLICY_STORE_ARN=""
-    ;;
-  *)
-    echo "ERROR: AUTH_TYPE must be 'aws-avp' or 'aws-cognito', got: '$AUTH_TYPE'" >&2
-    exit 1
-    ;;
-esac
-AVP_POLICY_STORE_ID=$(echo "$AVP_POLICY_STORE_ARN" | cut -d'/' -f2)
+source "$SERVICE_PATH/scripts/istio/resolve_auth"
 
 export SERVICE_ID
 export SERVICE_SLUG
@@ -89,6 +65,3 @@ export APPLICATION_ID
 export ROUTES_JSON
 export PUBLIC_ROUTES_JSON
 export PRIVATE_ROUTES_JSON
-export AUTH_TYPE
-export COGNITO_USER_POOL_ARN
-export AVP_POLICY_STORE_ID

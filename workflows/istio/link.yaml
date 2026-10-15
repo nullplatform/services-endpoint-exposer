@@ -1,0 +1,60 @@
+steps:
+  - name: "build link context"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/build_link_context"
+    configuration:
+      LINK_OPERATION: apply
+    output:
+      - name: SERVICE_ID
+        type: environment
+      - name: SERVICE_SLUG
+        type: environment
+      - name: LINK_ID
+        type: environment
+      - name: ACTION_ID
+        type: environment
+      - name: ACTION_NAME
+        type: environment
+      - name: K8S_NAMESPACE
+        type: environment
+      - name: APPLICATION_ID
+        type: environment
+      - name: DOMAIN_NAME
+        type: environment
+      - name: VISIBILITY
+        type: environment
+      - name: GATEWAY_NAME
+        type: environment
+      - name: ROUTES_JSON
+        type: environment
+      - name: LINK_ATTRIBUTES_JSON
+        type: environment
+      - name: AUTH_TYPE
+        type: environment
+      - name: COGNITO_USER_POOL_ARN
+        type: environment
+  - name: "check path conflicts"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/check_link_conflict"
+  - name: "build httproute"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/build_link_httproute"
+    output:
+      - name: HTTPROUTE_FILE
+        type: file
+        file: "$OUTPUT_DIR/httproute-link-$LINK_ID.yaml"
+  - name: "build policies"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/build_link_policies"
+  - name: apply
+    type: script
+    file: "$SERVICE_PATH/scripts/common/apply"
+    configuration:
+      ACTION: apply
+      DRY_RUN: false
+  - name: "prune stale policies"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/prune_link_policies"
+  - name: "store link results"
+    type: script
+    file: "$SERVICE_PATH/scripts/np/update_link_results"

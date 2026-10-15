@@ -48,6 +48,7 @@ TEST_FILES=(
   "test_authorization_policy.bats"
   "test_apply_cleanup.bats"
   "test_integration.bats"
+  "test_link_model.bats"
 )
 
 FAILED=0

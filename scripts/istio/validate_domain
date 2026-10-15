@@ -1,0 +1,75 @@
+#!/bin/bash
+
+# Validate Domain: fails fast when the Gateway chosen by `visibility` has no listener
+# that accepts `domain_name`. Without this check the service would be created, every
+# link would attach an HTTPRoute, and the routes would stay unaccepted
+# (status NoMatchingListenerHostname) with traffic silently not flowing.
+#
+# A listener accepts the domain when its hostname is unset (any host), equal to the
+# domain, or a wildcard (*.example.com) whose suffix the domain ends with — Gateway
+# API wildcards match one or more leading labels (a.example.com, a.b.example.com).
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+: "${DOMAIN_NAME:?DOMAIN_NAME is required}"
+: "${GATEWAY_NAME:?GATEWAY_NAME is required}"
+
+echo "Validating that gateway $GATEWAY_NAMESPACE/$GATEWAY_NAME accepts '$DOMAIN_NAME'..."
+
+if ! GATEWAY_JSON=$(kubectl get gateway "$GATEWAY_NAME" -n "$GATEWAY_NAMESPACE" -o json 2>&1); then
+  echo "ERROR: could not read gateway $GATEWAY_NAMESPACE/$GATEWAY_NAME: $GATEWAY_JSON" >&2
+  exit 1
+fi
+
+LISTENER_HOSTNAMES=$(echo "$GATEWAY_JSON" | jq -r '[.spec.listeners[]? | .hostname // "*"] | unique | .[]')
+
+ACCEPTED=false
+while IFS= read -r LISTENER_HOSTNAME; do
+  [[ -z "$LISTENER_HOSTNAME" ]] && continue
+  if [[ "$LISTENER_HOSTNAME" == "*" || "$LISTENER_HOSTNAME" == "$DOMAIN_NAME" ]]; then
+    ACCEPTED=true
+  elif [[ "$LISTENER_HOSTNAME" == \*.* && "$DOMAIN_NAME" == *"${LISTENER_HOSTNAME#\*}" ]]; then
+    ACCEPTED=true
+  fi
+  if [[ "$ACCEPTED" == "true" ]]; then
+    echo "✅ '$DOMAIN_NAME' is accepted by listener hostname '$LISTENER_HOSTNAME'"
+    break
+  fi
+done <<< "$LISTENER_HOSTNAMES"
+
+if [[ "$ACCEPTED" != "true" ]]; then
+  echo "ERROR: gateway $GATEWAY_NAMESPACE/$GATEWAY_NAME has no listener for '$DOMAIN_NAME'." >&2
+  echo "Listener hostnames: $(echo "$LISTENER_HOSTNAMES" | tr '\n' ' ')" >&2
+  exit 1
+fi
+
+# Domain ownership: a domain already serving links of another service belongs to that
+# service; accepting it here would let this service hang paths on someone else's
+# domain. Legacy HTTPRoutes (no link-id) only warn: during the migration the new
+# domain service must be created while the legacy routes still serve the domain.
+if ! HTTPROUTES=$(kubectl get httproute -n "$K8S_NAMESPACE" \
+    -l "nullplatform.com/managed-by=http-route-access-control" -o json 2>&1); then
+  echo "ERROR: could not list HTTPRoutes in $K8S_NAMESPACE: $HTTPROUTES" >&2
+  exit 1
+fi
+
+OWNERS=$(echo "$HTTPROUTES" | jq -r --arg host "$DOMAIN_NAME" --arg sid "$SERVICE_ID" '
+  [.items[]
+   | select((.spec.hostnames // []) | index($host))
+   | select(.metadata.labels["nullplatform.com/service-id"] != $sid)
+   | {service_id: .metadata.labels["nullplatform.com/service-id"],
+      link: (.metadata.labels["nullplatform.com/link-id"] != null)}]
+  | group_by(.link)
+  | map({link: .[0].link, services: (map(.service_id) | unique | join(", "))})
+  | .[] | "\(.link)\t\(.services)"')
+
+while IFS=$'\t' read -r IS_LINK OTHER_SERVICES; do
+  [[ -z "$IS_LINK" ]] && continue
+  if [[ "$IS_LINK" == "true" ]]; then
+    echo "ERROR: '$DOMAIN_NAME' already serves links of service(s) $OTHER_SERVICES" >&2
+    exit 1
+  fi
+  echo "WARNING: '$DOMAIN_NAME' is also served by legacy service(s) $OTHER_SERVICES (expected while migrating)"
+done <<< "$OWNERS"

@@ -15,7 +15,20 @@ INGRESS_TYPE="${INGRESS_TYPE:-istio}"
 echo "INGRESS_TYPE is set to '$INGRESS_TYPE'"
 echo "OVERRIDES_PATH is set to '$OVERRIDES_PATH'"
 
-WORKFLOW_PATH="$SERVICE_PATH/workflows/$INGRESS_TYPE/$ACTION_TO_EXECUTE.yaml"
+WORKFLOW_DIR="$SERVICE_PATH/workflows/$INGRESS_TYPE"
+
+# Services created before the domain + links model declare their routes inline and
+# have no domain_name: keep running them with the legacy workflows until migrated.
+IS_LEGACY=$(echo "$CONTEXT" | jq -r '
+  ((.parameters.domain_name // .service.attributes.domain_name // "") == "") and
+  (((.parameters.routes // .service.attributes.routes // []) | length) > 0)')
+
+if [[ "$IS_LEGACY" == "true" && -f "$WORKFLOW_DIR/legacy/$ACTION_TO_EXECUTE.yaml" ]]; then
+  echo "Service declares inline routes: using the legacy workflows"
+  WORKFLOW_DIR="$WORKFLOW_DIR/legacy"
+fi
+
+WORKFLOW_PATH="$WORKFLOW_DIR/$ACTION_TO_EXECUTE.yaml"
 OVERRIDES_WORKFLOW_PATH="$OVERRIDES_PATH/service/workflows/$ACTION_TO_EXECUTE.yaml"
 VALUES_PATH="$SERVICE_PATH/values.yaml"
 
