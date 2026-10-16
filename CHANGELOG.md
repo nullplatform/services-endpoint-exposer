@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.0.1](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.0.0...v1.0.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **deps:** bump nullplatform/scopes/worker-bridge from 2.0.1 to 2.0.3 ([#41](https://github.com/nullplatform/services-endpoint-exposer/issues/41)) ([68ea807](https://github.com/nullplatform/services-endpoint-exposer/commit/68ea8074b199ff6d5c321b136d1b0c78be5982a6))
+
+## [1.0.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.6.0...v1.0.0) (2026-10-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* AUTH_TYPE is no longer required. A missing or dropped AUTH_TYPE no longer fails the action: routes are exposed without auth. Set AUTH_TYPE explicitly on every agent that must enforce aws-cognito or aws-avp.
+
+### Features
+
+* add an ALL verb that matches any HTTP method ([185fd81](https://github.com/nullplatform/services-endpoint-exposer/commit/185fd81fb6efa324cb858a730d1df920d76d1816))
+* add AUTH_TYPE=none to expose routes without authentication ([385d0d6](https://github.com/nullplatform/services-endpoint-exposer/commit/385d0d60f37870e5bdc65125f2650ee6a4a7d8b1))
+* default AUTH_TYPE to none when unset ([c7cf84e](https://github.com/nullplatform/services-endpoint-exposer/commit/c7cf84ee764351e1b3ba7500592c357e6cf1d31f))
+* expose routes without authentication (AUTH_TYPE=none) and add an ALL verb ([1785900](https://github.com/nullplatform/services-endpoint-exposer/commit/17859000c7b82c4624dd5284e6e6000282e523e3))
+
+
+### Bug Fixes
+
+* don't reopen protected services when AUTH_TYPE is unset ([0656dab](https://github.com/nullplatform/services-endpoint-exposer/commit/0656dab04c5bf0962fb14bb2423b4887e0d7e92b))
+
 ## [0.6.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.5.0...v0.6.0) (2026-10-07)
 
 

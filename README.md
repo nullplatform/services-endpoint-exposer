@@ -18,6 +18,13 @@ The gateway (public or private) is chosen on the service with its `visibility`.
 |---|---|
 | `aws-cognito` | Istio validates Cognito JWT; AuthorizationPolicies check `cognito:groups` claims |
 | `aws-avp` | Amazon Verified Permissions policy store controls access |
+| `none` (default) | No authentication. Only the declared routes are reachable, but anyone can call them |
+
+#### `AUTH_TYPE=none`
+
+This is the default when `AUTH_TYPE` is unset. Use it to expose specific endpoints of an API without authentication. Each route still gets an `ALLOW` AuthorizationPolicy (host + path + method, with no group condition), because once any `ALLOW` policy targets a gateway, Istio denies every request that matches none of them. So the declared routes are open, and the rest of the scope's endpoints stay closed on that gateway.
+
+In this mode `Authorized Groups` is ignored and can be left empty, and no `COGNITO_*`/`AVP_*` variables or `environment` dimension are needed. No RequestAuthentication is created or deleted.
 
 ---
 
@@ -39,13 +46,13 @@ On create the service validates that the selected gateway has a listener for the
 | Field | Description |
 |---|---|
 | **Path** | Path on the service's domain. Supports exact (`/api/users`), parameterized (`/api/users/:id`) and wildcard (`/api/users/*`) |
-| **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) |
+| **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`), or `ALL` to match any method. `ALL` overrides any other verb selected on the same link |
 | **Scope** | Scope of the linking application that receives the traffic |
-| **Authorized Groups** | Groups allowed to call the path |
+| **Authorized Groups** | Groups allowed to call the path. Required with `aws-cognito`: create and update fail without them. Optional and ignored with `AUTH_TYPE=none` |
 
 Each link gets its own `HTTPRoute` (hostname = the service's domain) and `AuthorizationPolicies`, labeled `nullplatform.com/link-id`; unlink deletes exactly those. A path + method can be exposed by a single link per domain: a link that would overlap another one fails instead of being silently shadowed (Gateway API gives the oldest route the traffic). Updating a link replaces its route and prunes the policies it no longer needs.
 
-Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below). The domain + links model supports `AUTH_TYPE=aws-cognito` only.
+Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below). The domain + links model supports `AUTH_TYPE=aws-cognito` and `none` (`aws-avp` is not supported yet).
 
 ### Services created before the domain + links model
 
@@ -102,8 +109,15 @@ Auth configuration is resolved at **runtime from the agent's environment**, not 
 
 | Variable | Description | Example |
 |---|---|---|
-| `AUTH_TYPE` | Authorization scheme for the entire installation | `aws-cognito` |
 | `INGRESS_TYPE` | Must be `istio` | `istio` |
+
+#### Optional — global
+
+| Variable | Default | Description |
+|---|---|---|
+| `AUTH_TYPE` | `none` | Authorization scheme for the entire installation: `aws-cognito`, `aws-avp` or `none`. Unset means no authentication for services that never had it (see below) |
+
+Leaving `AUTH_TYPE` unset never removes auth from an existing service. Each create/update stores the scheme in the service's `auth_type` attribute, and when the variable is missing, create/update **fail** for any service stored with auth (or, for services created before `auth_type` existed, whose stored routes have authorized groups). Set `AUTH_TYPE=none` explicitly to drop auth on purpose. Deletes always proceed.
 
 #### Required per environment — `aws-cognito`
 
@@ -203,7 +217,7 @@ Without this override wired into the scope's channel, HTTPRoutes will point to s
 
 ## How auth resolution works
 
-On every action (create / update / delete) the service:
+On every action (create / update / delete) the service, unless `AUTH_TYPE=none`:
 
 1. Reads `AUTH_TYPE` from the agent environment
 2. Reads `service.dimensions.environment` from the action context (e.g. `"dev"`)
