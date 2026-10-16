@@ -12,10 +12,14 @@ POLICIES=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" \
 
 if [[ -z "$POLICIES" ]]; then
   echo "No AuthorizationPolicies found for service $SERVICE_ID"
-  exit 0
+  # Sourced by manage_policies: `exit` would skip building the new policies.
+  return 0
 fi
 
 for POLICY_NAME in $POLICIES; do
+  # sync_gateway_baseline only stops excluding hosts that a run removed.
+  kubectl get authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE" -o json \
+    | jq -r '.spec.rules[]?.to[]?.operation.hosts[]?' >> "$OUTPUT_DIR/.authz-removed-hosts" || true
   kubectl delete authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE"
   echo "✅ Deleted AuthorizationPolicy: $POLICY_NAME"
 done

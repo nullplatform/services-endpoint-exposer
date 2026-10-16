@@ -18,7 +18,7 @@ fi
 NUM_ROUTES=$(echo "$ROUTES_JSON" | jq 'length')
 if [[ "$NUM_ROUTES" -eq 0 ]]; then
   echo "No routes configured, skipping AuthorizationPolicy generation"
-  exit 0
+  return 0  # sourced by manage_policies
 fi
 
 SCOPES_JSON=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq '.results // []')

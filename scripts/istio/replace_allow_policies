@@ -1,0 +1,33 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Update path for the service's ALLOW AuthorizationPolicies (sourced by
+# manage_policies after build_allow_policies). Deleting them first and letting
+# the apply step recreate them left the gateway without the service's
+# policies for a few seconds on every update and every deploy sync. Policy
+# names are deterministic, so apply the rendered ones in place first, then
+# delete only the service's policies that weren't rendered (removed routes).
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+EXPECTED=""
+for POLICY_FILE in "$OUTPUT_DIR"/authorizationpolicy-*.yaml; do
+  [[ -f "$POLICY_FILE" ]] || continue
+  kubectl apply -f "$POLICY_FILE"
+  EXPECTED="$EXPECTED $(yq '.metadata.name' "$POLICY_FILE")"
+done
+
+EXISTING=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" \
+  -l "nullplatform.com/service-id=${SERVICE_ID},nullplatform.com/managed-by=http-route-access-control" \
+  -o jsonpath='{.items[*].metadata.name}')
+
+for POLICY_NAME in $EXISTING; do
+  if [[ " $EXPECTED " != *" $POLICY_NAME "* ]]; then
+    # sync_gateway_baseline only stops excluding hosts that a run removed.
+    kubectl get authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE" -o json \
+      | jq -r '.spec.rules[]?.to[]?.operation.hosts[]?' >> "$OUTPUT_DIR/.authz-removed-hosts" || true
+    kubectl delete authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE" --ignore-not-found
+    echo "✅ Deleted stale AuthorizationPolicy: $POLICY_NAME"
+  fi
+done
