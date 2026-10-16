@@ -9,5 +9,9 @@
 
 set -euo pipefail
 
-source "$SERVICE_PATH/scripts/istio/build_request_authentication"
+# AUTH_TYPE=none validates no JWT. build_request_authentication exits when there is
+# no user pool, which would also skip the allow policies sourced after it.
+if [[ "$AUTH_TYPE" != "none" ]]; then
+  source "$SERVICE_PATH/scripts/istio/build_request_authentication"
+fi
 source "$SERVICE_PATH/scripts/istio/build_allow_policies"

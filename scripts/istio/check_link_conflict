@@ -57,7 +57,7 @@ OVERLAPS=$(echo "$HTTPROUTES" | jq -r \
   | .spec.rules[]?.matches[]?
   | select(.path.value == $path)
   | (.method // null) as $method
-  | select($method == null or ($methods | index($method)))
+  | select($method == null or ($methods | index("ALL")) or ($methods | index($method)))
   | [$route.metadata.name, ($method // "*"), ($route.metadata.labels["nullplatform.com/link-id"] // "")]
   | @tsv')
 

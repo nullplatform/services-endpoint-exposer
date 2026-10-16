@@ -6,11 +6,13 @@
 set -euo pipefail
 
 CONTEXT="${CONTEXT:-${NP_ACTION_CONTEXT:-}}"
+: "${AUTH_TYPE:?AUTH_TYPE is required (resolved by build_service_context)}"
 
 ATTRIBUTES=$(jq -n \
   --arg domain_name "$DOMAIN_NAME" \
   --arg visibility "$VISIBILITY" \
-  '{domain_name: $domain_name, visibility: $visibility}')
+  --arg auth_type "$AUTH_TYPE" \
+  '{domain_name: $domain_name, visibility: $visibility, auth_type: $auth_type}')
 
 RESULTS=$(echo "$CONTEXT" | jq --argjson attributes "$ATTRIBUTES" \
   '(.notification.parameters // .parameters // {}) + $attributes')

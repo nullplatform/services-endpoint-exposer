@@ -11,8 +11,7 @@
             "required": [
                 "path",
                 "methods",
-                "scope",
-                "groups"
+                "scope"
             ],
             "uiSchema": {
                 "type": "VerticalLayout",
@@ -67,6 +66,7 @@
                     "items": {
                         "type": "string",
                         "enum": [
+                            "ALL",
                             "GET",
                             "POST",
                             "PUT",
@@ -83,13 +83,12 @@
                 "groups": {
                     "type": "array",
                     "title": "Authorized Groups",
-                    "description": "Groups allowed to call this path. Add each group name and press Add.",
+                    "description": "Groups allowed to call this path. Add each group name and press Add. Required unless authentication is disabled for this installation.",
                     "items": {
                         "type": "string",
                         "pattern": "^[a-zA-Z0-9_-]+$"
                     },
                     "uniqueItems": true,
-                    "minItems": 1,
                     "editableOn": ["create", "update"]
                 },
                 "endpoint": {

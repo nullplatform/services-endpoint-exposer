@@ -284,6 +284,49 @@ httproute_items() {
   done
 }
 
+@test "build_link_context: accepts the ALL verb" {
+  export CONTEXT="$(jq -c '.parameters.methods = ["ALL"]' <<< "$CONTEXT")"
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  assert_output --partial '"methods":["ALL"]'
+}
+
+@test "build_link_context: AUTH_TYPE=none makes groups optional and drops them" {
+  export AUTH_TYPE=none
+  for groups in '[]' '["admin"]'; do
+    export CONTEXT="$(jq -c --argjson g "$groups" '.parameters.groups = $g' <<< "$(load_fixture link-notification)")"
+
+    run_context_script build_link_context ROUTES_JSON AUTH_TYPE COGNITO_USER_POOL_ARN
+
+    assert_success
+    assert_output --partial '"groups":[]'
+    assert_output --partial "AUTH_TYPE=none"
+    assert_output --partial "COGNITO_USER_POOL_ARN="
+  done
+}
+
+@test "build_link_context: unset AUTH_TYPE refuses to reopen a link stored with auth" {
+  unset AUTH_TYPE
+  export CONTEXT="$(jq -c '.parameters.groups = [] | .link.attributes.auth_type = "aws-cognito"' <<< "$CONTEXT")"
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_failure
+  assert_output --partial "configured with auth: aws-cognito"
+}
+
+@test "build_link_context: unset AUTH_TYPE defaults to none for a link without auth" {
+  unset AUTH_TYPE
+  export CONTEXT="$(jq -c '.parameters.groups = [] | .link.attributes = {} | .service.attributes.routes = []' <<< "$CONTEXT")"
+
+  run_context_script build_link_context AUTH_TYPE
+
+  assert_success
+  assert_output --partial "AUTH_TYPE=none"
+}
+
 @test "build_link_context: unlink only needs the link identity" {
   export CONTEXT="$(jq -c '.parameters = {} | .service.attributes = {} | .service.dimensions = {}' <<< "$CONTEXT")"
   export LINK_OPERATION=delete
@@ -329,6 +372,16 @@ conflict_env() {
   run bash "$SERVICE_PATH/scripts/istio/check_link_conflict"
 
   assert_failure
+}
+
+@test "check_link_conflict: ALL conflicts with any method on the same path" {
+  conflict_env "/api/users" '["ALL"]'
+  httproute_items '[{"name": "r1", "link_id": "link-other", "host": "api.acme.com", "path": "/api/users", "method": "PATCH"}]' > "$KUBECTL_HTTPROUTES_FILE"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_link_conflict"
+
+  assert_failure
+  assert_output --partial "already exposed by link link-other"
 }
 
 @test "check_link_conflict: passes for its own route, other methods, paths and domains" {
@@ -432,6 +485,18 @@ conflict_env() {
   assert_success
   run jq -r '.attributes | "\(.endpoint)|\(.summary)|\(.methods | join(","))|\(.groups | join(","))"' "$TEST_TEMP_DIR/link-patch-body.json"
   assert_output "api.acme.com/api/users/*|GET | api.acme.com/api/users/* | admin|GET|admin"
+}
+
+@test "update_link_results: stores the auth_type and omits empty groups from the summary" {
+  export LINK_ID=link-5678 DOMAIN_NAME=api.acme.com AUTH_TYPE=none
+  export LINK_ATTRIBUTES_JSON='{"path": "/health", "methods": ["ALL"], "scope": "users-prod"}'
+  export ROUTES_JSON='[{"path": "/health", "methods": ["ALL"], "groups": [], "scope": "users-prod", "visibility": "public"}]'
+
+  run bash "$SERVICE_PATH/scripts/np/update_link_results"
+
+  assert_success
+  run jq -r '.attributes | "\(.auth_type)|\(.summary)"' "$TEST_TEMP_DIR/link-patch-body.json"
+  assert_output "none|ALL | api.acme.com/health"
 }
 
 @test "check_active_links: blocks the delete while links are active" {

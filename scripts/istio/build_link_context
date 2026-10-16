@@ -4,7 +4,7 @@
 # application on the domain of the service it is linked to.
 #
 #   service attributes: domain_name, visibility
-#   link attributes:    path, methods, groups, scope
+#   link attributes:    path, methods, groups (optional with AUTH_TYPE=none), scope
 #
 # Exports ROUTES_JSON as a one-element array in the same shape the legacy model
 # uses ({path, methods, groups, scope, visibility}), so process_routes, build_rule
@@ -106,15 +106,9 @@ if [[ ! "$ROUTE_PATH" =~ ^/[a-zA-Z0-9_./:*{}-]*$ ]]; then
 fi
 
 INVALID_METHODS=$(echo "$ROUTE" | jq -r '
-  .methods - ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] | join(", ")')
+  .methods - ["ALL", "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] | join(", ")')
 if [[ "$(echo "$ROUTE" | jq '.methods | length')" -eq 0 || -n "$INVALID_METHODS" ]]; then
-  echo "ERROR: methods must be a non-empty subset of GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS (invalid: '${INVALID_METHODS}')" >&2
-  exit 1
-fi
-
-# An ALLOW policy without groups would let any request through on this path.
-if [[ "$(echo "$ROUTE" | jq '.groups | length')" -eq 0 ]]; then
-  echo "ERROR: at least one authorized group is required" >&2
+  echo "ERROR: methods must be a non-empty subset of ALL, GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS (invalid: '${INVALID_METHODS}')" >&2
   exit 1
 fi
 
@@ -137,9 +131,18 @@ fi
 
 ROUTES_JSON=$(echo "$ROUTE" | jq -c '[.]')
 
+# resolve_auth also rejects a route without groups unless AUTH_TYPE=none: with auth,
+# an ALLOW policy without groups would let any request through on this path.
 ENV_DIMENSION=$(echo "$CONTEXT" | jq -r --argjson service "$SERVICE_JSON" '
   .service.dimensions.environment // .link.dimensions.environment // $service.dimensions.environment // ""')
 source "$SERVICE_PATH/scripts/istio/resolve_auth"
+
+# No JWT is validated with AUTH_TYPE=none, so a cognito:groups condition could never
+# match: drop the groups so the policy allows the path without auth.
+if [[ "$AUTH_TYPE" == "none" ]]; then
+  ROUTE=$(echo "$ROUTE" | jq -c '.groups = []')
+  ROUTES_JSON=$(echo "$ROUTE" | jq -c '[.]')
+fi
 
 if [[ "$AUTH_TYPE" == "aws-avp" ]]; then
   echo "ERROR: AUTH_TYPE=aws-avp is not supported by the domain + links model yet; use aws-cognito" >&2

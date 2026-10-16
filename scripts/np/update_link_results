@@ -4,18 +4,23 @@
 
 set -euo pipefail
 
+: "${AUTH_TYPE:?AUTH_TYPE is required (resolved by build_link_context)}"
+
 ROUTE=$(echo "$ROUTES_JSON" | jq -c '.[0]')
 
 ATTRIBUTES=$(echo "$LINK_ATTRIBUTES_JSON" | jq -c \
   --argjson route "$ROUTE" \
-  --arg domain_name "$DOMAIN_NAME" '
+  --arg domain_name "$DOMAIN_NAME" \
+  --arg auth_type "$AUTH_TYPE" '
   . + {
     path: $route.path,
     methods: $route.methods,
     groups: $route.groups,
     scope: $route.scope,
+    auth_type: $auth_type,
     endpoint: ($domain_name + $route.path),
-    summary: (($route.methods | join(", ")) + " | " + $domain_name + $route.path + " | " + ($route.groups | join(", ")))
+    summary: (($route.methods | join(", ")) + " | " + $domain_name + $route.path
+      + (if ($route.groups | length) > 0 then " | " + ($route.groups | join(", ")) else "" end))
   }')
 
 echo "Storing link $LINK_ID results: $(echo "$ATTRIBUTES" | jq -r '.summary')"
