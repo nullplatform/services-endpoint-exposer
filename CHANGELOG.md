@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.0.0...v1.0.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **deps:** bump nullplatform/scopes/worker-bridge from 2.0.1 to 2.0.3 ([#41](https://github.com/nullplatform/services-endpoint-exposer/issues/41)) ([68ea807](https://github.com/nullplatform/services-endpoint-exposer/commit/68ea8074b199ff6d5c321b136d1b0c78be5982a6))
+
 ## [1.0.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v0.6.0...v1.0.0) (2026-10-13)
 
 
