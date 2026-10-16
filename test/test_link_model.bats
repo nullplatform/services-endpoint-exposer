@@ -307,6 +307,15 @@ httproute_items() {
   done
 }
 
+@test "build_link_context: aws-cognito requires groups even on a delete-typed notification" {
+  export CONTEXT="$(jq -c '.parameters.groups = [] | .type = "delete"' <<< "$CONTEXT")"
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_failure
+  assert_output --partial "at least one authorized group is required"
+}
+
 @test "build_link_context: unset AUTH_TYPE refuses to reopen a link stored with auth" {
   unset AUTH_TYPE
   export CONTEXT="$(jq -c '.parameters.groups = [] | .link.attributes.auth_type = "aws-cognito"' <<< "$CONTEXT")"
