@@ -15,9 +15,11 @@
 # Exports: AUTH_TYPE, COGNITO_USER_POOL_ARN, AVP_POLICY_STORE_ARN, AVP_POLICY_STORE_ID
 
 # Deletes (and reads) only remove or inspect resources, so they skip the checks below.
+# Explicit allowlist: any other operation builds policies and keeps the checks.
 AUTH_IS_DELETE=false
+AUTH_OPERATION="${SERVICE_OPERATION:-${LINK_OPERATION:-apply}}"
 if [[ "$(echo "$CONTEXT" | jq -r '.type // ""')" == "delete" ||
-      "${SERVICE_OPERATION:-${LINK_OPERATION:-apply}}" != "apply" ]]; then
+      "$AUTH_OPERATION" == "delete" || "$AUTH_OPERATION" == "read" ]]; then
   AUTH_IS_DELETE=true
 fi
 
