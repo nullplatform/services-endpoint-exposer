@@ -1,5 +1,5 @@
 {
-    "name": "HTTP Route Access Control",
+    "name": "Endpoint Exposer",
     "slug": "http-route-access-control",
     "type": "dependency",
     "visible_to": ["{{ env.Getenv `NRN` }}"],
