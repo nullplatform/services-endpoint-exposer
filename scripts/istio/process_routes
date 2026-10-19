@@ -13,7 +13,7 @@ echo "Number of routes to process: $NUM_ROUTES"
 
 if [[ "$NUM_ROUTES" -eq 0 ]]; then
   echo "No routes to process"
-  exit 0
+  return 0 2>/dev/null || exit 0
 fi
 
 APPLICATION_ID="${APPLICATION_ID:-$(echo "$CONTEXT" | jq -r '.tags.application_id // empty')}"

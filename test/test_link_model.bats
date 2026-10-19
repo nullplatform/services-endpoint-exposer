@@ -25,6 +25,7 @@ echo "np $*" >> "$TEST_TEMP_DIR/np.log"
 case "$1 $2" in
   "service read") cat "$NP_SERVICE_READ_FILE" ;;
   "link list")    cat "$NP_LINK_LIST_FILE" ;;
+  "scope list")   cat "$NP_SCOPE_LIST_FILE" ;;
   "link patch")
     while [[ $# -gt 0 ]]; do
       [[ "$1" == "--body" ]] && echo "$2" > "$TEST_TEMP_DIR/link-patch-body.json"
@@ -42,6 +43,7 @@ case "$1 $2" in
   "get gateway")             cat "$KUBECTL_GATEWAY_FILE" ;;
   "get httproute")           cat "$KUBECTL_HTTPROUTES_FILE" ;;
   "get authorizationpolicy") cat "$KUBECTL_AUTHZ_NAMES_FILE" ;;
+  "get services")            cat "$KUBECTL_SERVICES_FILE" ;;
 esac
 EOF
   chmod +x "$TEST_TEMP_DIR/np" "$TEST_TEMP_DIR/kubectl"
@@ -336,6 +338,54 @@ httproute_items() {
   assert_output --partial "AUTH_TYPE=none"
 }
 
+# Scopes of the linking application and the k8s Services routing to them, for the
+# scope auto-resolution. $1: JSON array of {id, slug, reachability, status, routable}.
+scope_env() {
+  export NP_SCOPE_LIST_FILE="$TEST_TEMP_DIR/scopes.json" KUBECTL_SERVICES_FILE="$TEST_TEMP_DIR/services.json"
+  jq -c '{results: [.[] | {id, slug, status: (.status // "active"), dimensions: {environment: "dev"},
+    capabilities: {visibility: {reachability: .reachability}}}]}' <<< "$1" > "$NP_SCOPE_LIST_FILE"
+  jq -c '{items: [.[] | select(.routable != false) | {spec: {selector: {scope_id: (.id | tostring)}}}]}' <<< "$1" > "$KUBECTL_SERVICES_FILE"
+  export CONTEXT="$(jq -c 'del(.parameters.scope) | del(.link.attributes.scope) | .link.scope = null' <<< "$CONTEXT")"
+}
+
+@test "build_link_context: without a scope, resolves the routable scope matching the service's visibility" {
+  scope_env '[
+    {"id": 1, "slug": "pub",        "reachability": "public"},
+    {"id": 2, "slug": "priv",       "reachability": "account"},
+    {"id": 3, "slug": "serverless", "reachability": "public", "routable": false},
+    {"id": 4, "slug": "gone",       "reachability": "public", "status": "deleted"}
+  ]'
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  assert_output --partial '"scope":"pub"'
+}
+
+@test "build_link_context: without a scope, a private service resolves the private scope" {
+  scope_env '[{"id": 1, "slug": "pub", "reachability": "public"}, {"id": 2, "slug": "priv", "reachability": "account"}]'
+  export NP_SERVICE_READ_FILE="$TEST_TEMP_DIR/service.json"
+  jq -c '.service | .attributes.visibility = "private"' <<< "$CONTEXT" > "$NP_SERVICE_READ_FILE"
+  export CONTEXT="$(jq -c '.service.attributes = {}' <<< "$CONTEXT")"
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  assert_output --partial '"scope":"priv"'
+}
+
+@test "build_link_context: without a scope, fails when none or several scopes match" {
+  scope_env '[{"id": 2, "slug": "priv", "reachability": "account"}]'
+  run_context_script build_link_context ROUTES_JSON
+  assert_failure
+  assert_output --partial "no public scope running in Kubernetes"
+
+  scope_env '[{"id": 1, "slug": "a", "reachability": "public"}, {"id": 2, "slug": "b", "reachability": "public"}]'
+  run_context_script build_link_context ROUTES_JSON
+  assert_failure
+  assert_output --partial "several public scopes"
+}
+
 @test "build_link_context: unlink only needs the link identity" {
   export CONTEXT="$(jq -c '.parameters = {} | .service.attributes = {} | .service.dimensions = {}' <<< "$CONTEXT")"
   export LINK_OPERATION=delete
@@ -509,17 +559,21 @@ conflict_env() {
 }
 
 @test "check_active_links: blocks the delete while links are active" {
-  export SERVICE_ID=svc-1234 NP_LINK_LIST_FILE="$TEST_TEMP_DIR/links.json"
+  export SERVICE_ID=svc-1234 NP_LINK_LIST_FILE="$TEST_TEMP_DIR/links.json" NP_SERVICE_READ_FILE="$TEST_TEMP_DIR/service.json"
+  echo '{"id": "svc-1234", "entity_nrn": "organization=1:account=2:namespace=3:application=999"}' > "$NP_SERVICE_READ_FILE"
   echo '{"results": [{"id": "l1", "status": "active", "attributes": {"summary": "GET | api.acme.com/x | admin"}}, {"id": "l2", "status": "archived"}]}' > "$NP_LINK_LIST_FILE"
 
   run bash "$SERVICE_PATH/scripts/np/check_active_links"
 
   assert_failure
   assert_output --partial "link l1 [active]"
+  # An API key can only list links with an NRN; links live under any app of the org.
+  assert_file_contains "$TEST_TEMP_DIR/np.log" "link list --nrn organization=1 --show-descendants --service-id svc-1234"
 }
 
 @test "check_active_links: allows the delete when every link is archived or failed" {
-  export SERVICE_ID=svc-1234 NP_LINK_LIST_FILE="$TEST_TEMP_DIR/links.json"
+  export SERVICE_ID=svc-1234 NP_LINK_LIST_FILE="$TEST_TEMP_DIR/links.json" NP_SERVICE_READ_FILE="$TEST_TEMP_DIR/service.json"
+  echo '{"id": "svc-1234", "entity_nrn": "organization=1:account=2:namespace=3:application=999"}' > "$NP_SERVICE_READ_FILE"
   echo '{"results": [{"id": "l1", "status": "archived"}, {"id": "l2", "status": "failed"}]}' > "$NP_LINK_LIST_FILE"
 
   run bash "$SERVICE_PATH/scripts/np/check_active_links"

@@ -9,7 +9,14 @@ set -euo pipefail
 
 : "${SERVICE_ID:?SERVICE_ID is required}"
 
-LINKS=$(np link list --service-id "$SERVICE_ID" --limit 200 --format json | jq -c '.results // []')
+# Links belong to the linking applications, anywhere in the organization. With an
+# API key (the agent) the list needs an NRN, or it is rejected with 403.
+ORGANIZATION_NRN=$(np service read --id "$SERVICE_ID" --format json |
+  jq -r '.entity_nrn // "" | capture("(?<org>organization=[0-9]+)").org // ""')
+: "${ORGANIZATION_NRN:?could not resolve the organization of service $SERVICE_ID}"
+
+LINKS=$(np link list --nrn "$ORGANIZATION_NRN" --show-descendants --service-id "$SERVICE_ID" \
+  --limit 200 --format json | jq -c '.results // []')
 
 ACTIVE_LINKS=$(echo "$LINKS" | jq -c '[
   .[] | select(.status as $s | ["archived", "archiving", "failed", "cancelled"] | index($s) | not)

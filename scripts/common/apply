@@ -86,5 +86,6 @@ done
 # Cleanup temporary directory
 rm -rf "$TEMP_APPLY_DIR"
 
-# Note: DRY_RUN is for testing - we exit 0 even in dry run mode
-exit 0
+# Note: DRY_RUN is for testing - the script succeeds even in dry run mode. No
+# trailing exit: the workflow runner runs every step in one shell, so an exit
+# here would end the steps after apply (store results, prune policies).

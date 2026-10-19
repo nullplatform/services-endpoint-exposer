@@ -1,0 +1,57 @@
+#!/bin/bash
+
+# Resolve Link Scope: picks the scope of the linking application that receives the
+# traffic of a link that doesn't name one.
+#
+# The link form can't offer the scopes (the platform doesn't pass them to the link
+# context), so the scope is resolved from the service's visibility instead: the
+# application's scope in the link's dimensions whose visibility matches (public →
+# reachability public / visibility external, private → anything else) and that has
+# a Kubernetes Service to route to. Zero or several matches fail with the candidates,
+# so the developer can name the scope on the link instead.
+#
+# Sourced by build_link_context.
+# Required: CONTEXT, APPLICATION_ID, VISIBILITY (public|private), K8S_NAMESPACE
+# Sets: ROUTE_SCOPE
+
+LINK_DIMENSIONS=$(echo "$CONTEXT" | jq -c '.link.dimensions // {}')
+
+echo "Resolving the $VISIBILITY scope of application $APPLICATION_ID for dimensions $LINK_DIMENSIONS..."
+
+APP_SCOPES=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq -c '.results // []')
+
+if ! K8S_SERVICES=$(kubectl get services -n "$K8S_NAMESPACE" -o json 2>&1); then
+  echo "ERROR: could not list Services in $K8S_NAMESPACE: $K8S_SERVICES" >&2
+  exit 1
+fi
+ROUTABLE_SCOPE_IDS=$(echo "$K8S_SERVICES" | jq -c '[.items[].spec.selector.scope_id // empty] | unique')
+
+CANDIDATES=$(echo "$APP_SCOPES" | jq -c \
+  --argjson dims "$LINK_DIMENSIONS" \
+  --arg visibility "$VISIBILITY" \
+  --argjson routable "$ROUTABLE_SCOPE_IDS" '
+  [.[]
+   | select((.status // "") | IN("deleted", "deleting") | not)
+   | select(. as $scope | $dims | to_entries | all(.value == ($scope.dimensions // {})[.key]))
+   | ((.capabilities.visibility.reachability // .service.attributes.visibility // "public") as $r
+      | if $r == "public" or $r == "external" then "public" else "private" end) as $scope_visibility
+   | select($scope_visibility == $visibility)
+   | select((.id | tostring) as $id | $routable | index($id))
+   | {slug, id, status}]')
+
+case "$(echo "$CANDIDATES" | jq 'length')" in
+  1)
+    ROUTE_SCOPE=$(echo "$CANDIDATES" | jq -r '.[0].slug')
+    echo "Resolved scope: $ROUTE_SCOPE (id $(echo "$CANDIDATES" | jq -r '.[0].id'))"
+    ;;
+  0)
+    echo "ERROR: application $APPLICATION_ID has no $VISIBILITY scope running in Kubernetes for dimensions $LINK_DIMENSIONS." >&2
+    echo "Deploy one, or name the scope on the link." >&2
+    exit 1
+    ;;
+  *)
+    echo "ERROR: application $APPLICATION_ID has several $VISIBILITY scopes for dimensions $LINK_DIMENSIONS:" \
+      "$(echo "$CANDIDATES" | jq -r 'map(.slug) | join(", ")'). Name the scope on the link." >&2
+    exit 1
+    ;;
+esac

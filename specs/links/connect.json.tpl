@@ -10,8 +10,7 @@
             "$schema": "http://json-schema.org/draft-07/schema#",
             "required": [
                 "path",
-                "methods",
-                "scope"
+                "methods"
             ],
             "uiSchema": {
                 "type": "VerticalLayout",
@@ -54,10 +53,7 @@
                 "scope": {
                     "type": "string",
                     "title": "Scope",
-                    "description": "Scope that receives the traffic of this path.",
-                    "additionalKeywords": {
-                        "enum": "[.scopes[]?.slug] | if length == 0 then [\"No scopes available for selected environment\"] else . end"
-                    },
+                    "description": "Slug of the scope that receives the traffic of this path. Leave empty to use the application's scope whose visibility matches the service (public or private) in the link's dimensions.",
                     "editableOn": ["create", "update"]
                 },
                 "methods": {
