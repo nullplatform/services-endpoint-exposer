@@ -134,9 +134,9 @@
         "values": {}
     },
     "selectors": {
-        "category": "Security",
+        "category": "Networking",
         "imported": false,
         "provider": "Istio",
-        "sub_category": "Access Control"
+        "sub_category": "Endpoint Exposure"
     }
 }
