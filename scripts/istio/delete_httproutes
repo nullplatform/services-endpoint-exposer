@@ -1,0 +1,15 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# First step of the delete workflow: remove the service's HTTPRoutes before its
+# AuthorizationPolicies. In the other order the routes stay live for a moment
+# without their ALLOW policies, and once the gateway baseline stops excluding
+# the host they would serve requests without auth.
+# (The delete workflow never renders the HTTPRoutes, so they go by label.)
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+: "${K8S_NAMESPACE:?K8S_NAMESPACE is required}"
+
+kubectl delete httproute -n "$K8S_NAMESPACE" -l "nullplatform.com/service-id=$SERVICE_ID" --ignore-not-found
