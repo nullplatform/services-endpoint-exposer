@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.0.2...v1.0.3) (2026-10-19)
+
+
+### Bug Fixes
+
+* list Endpoint Exposer under Networking ([#47](https://github.com/nullplatform/services-endpoint-exposer/issues/47)) ([30c9416](https://github.com/nullplatform/services-endpoint-exposer/commit/30c9416f4e2d853b4a3ea7a8cc122bc4a66c82a4))
+
 ## [1.0.2](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.0.1...v1.0.2) (2026-10-19)
 
 
