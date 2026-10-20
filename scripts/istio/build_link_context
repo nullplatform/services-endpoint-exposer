@@ -4,7 +4,8 @@
 # application on the domain of the service it is linked to.
 #
 #   service attributes: domain_name, visibility
-#   link attributes:    path, methods, groups (optional with AUTH_TYPE=none),
+#   link attributes:    path, methods (optional: ALL by default),
+#                       groups (optional with AUTH_TYPE=none),
 #                       scope (optional: resolved from the service's visibility)
 #
 # Exports ROUTES_JSON as a one-element array in the same shape the legacy model
@@ -89,7 +90,8 @@ ROUTE=$(echo "$LINK_ATTRIBUTES_JSON" | jq -c \
   --arg link_scope "$(echo "$CONTEXT" | jq -r '.link.scope.slug // ""')" '
   {
     path: (.path // ""),
-    methods: (.methods // (if .method then [.method] else [] end)),
+    methods: ((.methods // (if .method then [.method] else [] end))
+      | if length == 0 then ["ALL"] else . end),
     groups: (.groups |
       if type == "array" then .
       elif type == "string" then split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))
@@ -108,8 +110,9 @@ fi
 
 INVALID_METHODS=$(echo "$ROUTE" | jq -r '
   .methods - ["ALL", "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] | join(", ")')
-if [[ "$(echo "$ROUTE" | jq '.methods | length')" -eq 0 || -n "$INVALID_METHODS" ]]; then
-  echo "ERROR: methods must be a non-empty subset of ALL, GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS (invalid: '${INVALID_METHODS}')" >&2
+# No verbs means every verb (ALL) was normalized above, so only unknown verbs fail.
+if [[ -n "$INVALID_METHODS" ]]; then
+  echo "ERROR: methods must be a subset of ALL, GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS (invalid: '${INVALID_METHODS}')" >&2
   exit 1
 fi
 

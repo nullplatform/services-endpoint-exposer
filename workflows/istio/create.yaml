@@ -28,6 +28,9 @@ steps:
   - name: "validate domain"
     type: script
     file: "$SERVICE_PATH/scripts/istio/validate_domain"
+  - name: "check domain dns"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/check_domain_dns"
   - name: "build request authentication"
     type: script
     file: "$SERVICE_PATH/scripts/istio/build_request_authentication"

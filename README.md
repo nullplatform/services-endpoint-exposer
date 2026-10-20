@@ -39,15 +39,24 @@ Exposing endpoints takes two steps: a **service** owns a domain, and each **link
 | **Domain name** | Hostname the paths are exposed on, e.g. `api.example.com`. No wildcards. Fixed after creation. |
 | **Visibility** | `public` attaches the domain to the public gateway, `private` to the private one. Fixed after creation. |
 
-On create the service validates that the selected gateway has a listener for the domain and that no other service already serves links on it, and ensures the Cognito `RequestAuthentication`. It creates no route by itself. It can only be deleted once every link is unlinked.
+On create the service validates that the selected gateway has a listener for the domain and that no other service already serves links on it, checks the domain in DNS (see below), and ensures the Cognito `RequestAuthentication`. It creates no route by itself. It can only be deleted once every link is unlinked.
+
+#### Domain DNS check
+
+The domain must exist in DNS wherever it is hosted (Route 53, GoDaddy, Cloudflare, an internal DNS server…):
+
+- **public** services are checked against public resolvers (`PUBLIC_DNS_RESOLVERS`, default `1.1.1.1 8.8.8.8`), so the check sees what internet clients see and not a split-horizon private view of the same zone. If none replies, the agent's resolver is used.
+- **private** services are checked with the agent's own resolver: the agent runs inside the client's network, so it sees the internal DNS.
+
+A domain that doesn't resolve fails the create, telling apart a domain that isn't registered (only the TLD answers) from a zone that lacks the record. A domain that resolves but not to the gateway's address only warns: a CDN or proxy may forward to it, but usually requests would never reach the routes. `DOMAIN_DNS_CHECK=warn` reports without failing, `off` skips the check.
 
 ### 2. Link an application — one path
 
 | Field | Description |
 |---|---|
 | **Path** | Path on the service's domain. Supports exact (`/api/users`), parameterized (`/api/users/:id`) and wildcard (`/api/users/*`) |
-| **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`), or `ALL` to match any method. `ALL` overrides any other verb selected on the same link |
-| **Scope** | Optional. Slug of the linking application's scope that receives the traffic. When empty, the agent picks the application's scope in the link's dimensions whose visibility matches the service (`public` ↔ reachability `public`, `private` ↔ anything else) and that has a Kubernetes Service to route to; none or several matches fail and ask for the slug. The form can't list the scopes: the platform doesn't pass them to the link context |
+| **Verbs** | Optional, `ALL` (any method) by default. Pick HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) to expose only those. `ALL` overrides any other verb selected on the same link |
+| **Scope** | Optional. Slug of the linking application's scope that receives the traffic. When empty, the agent picks the application's scope in the link's dimensions whose visibility matches the service (`public` ↔ reachability `public`, `private` ↔ anything else) and that has a Kubernetes Service to route to. With several matches the pick is deterministic: active scopes first, then the oldest; the others are logged and the chosen slug is stored on the link. No match fails and asks for the slug. The form can't list the scopes: the platform doesn't pass them to the link context |
 | **Authorized Groups** | Groups allowed to call the path. Required with `aws-cognito`: create and update fail without them. Optional and ignored with `AUTH_TYPE=none` |
 
 Each link gets its own `HTTPRoute` (hostname = the service's domain) and `AuthorizationPolicies`, labeled `nullplatform.com/link-id`; unlink deletes exactly those. A path + method can be exposed by a single link per domain: a link that would overlap another one fails instead of being silently shadowed (Gateway API gives the oldest route the traffic). Updating a link replaces its route and prunes the policies it no longer needs.
@@ -116,6 +125,8 @@ Auth configuration is resolved at **runtime from the agent's environment**, not 
 | Variable | Default | Description |
 |---|---|---|
 | `AUTH_TYPE` | `none` | Authorization scheme for the entire installation: `aws-cognito`, `aws-avp` or `none`. Unset means no authentication for services that never had it (see below) |
+| `DOMAIN_DNS_CHECK` | `enforce` | Domain DNS check on service create/update: `enforce` fails when the domain doesn't resolve, `warn` only reports, `off` skips it |
+| `PUBLIC_DNS_RESOLVERS` | `1.1.1.1 8.8.8.8` | Space-separated resolvers used to check public domains; the first that replies is used |
 
 Leaving `AUTH_TYPE` unset never removes auth from an existing service. Each create/update stores the scheme in the service's `auth_type` attribute, and when the variable is missing, create/update **fail** for any service stored with auth (or, for services created before `auth_type` existed, whose stored routes have authorized groups). Set `AUTH_TYPE=none` explicitly to drop auth on purpose. Deletes always proceed.
 

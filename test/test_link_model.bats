@@ -26,6 +26,12 @@ case "$1 $2" in
   "service read") cat "$NP_SERVICE_READ_FILE" ;;
   "link list")    cat "$NP_LINK_LIST_FILE" ;;
   "scope list")   cat "$NP_SCOPE_LIST_FILE" ;;
+  "link action")
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" == "--results" ]] && echo "$2" > "$TEST_TEMP_DIR/link-action-results.json"
+      shift
+    done
+    ;;
   "link patch")
     while [[ $# -gt 0 ]]; do
       [[ "$1" == "--body" ]] && echo "$2" > "$TEST_TEMP_DIR/link-patch-body.json"
@@ -202,6 +208,114 @@ httproute_items() {
 
 # --- build_link_context ------------------------------------------------------
 
+# --- check_domain_dns --------------------------------------------------------
+
+# dig mock: answers come from $DIG_DIR/<name>.<TYPE> (missing file = no answer);
+# "+authority SOA" queries read $DIG_DIR/<name>.AUTH. Every call is logged.
+dns_env() {
+  export DOMAIN_NAME=api.acme.com GATEWAY_NAME=gateway-public VISIBILITY="${1:-public}" DOMAIN_DNS_CHECK=enforce
+  export DIG_DIR="$TEST_TEMP_DIR/digdata" KUBECTL_GATEWAY_ADDRESSES_FILE="$TEST_TEMP_DIR/gw-addresses"
+  mkdir -p "$DIG_DIR"
+  echo "lb-123.elb.amazonaws.com" > "$KUBECTL_GATEWAY_ADDRESSES_FILE"
+  cat > "$TEST_TEMP_DIR/dig" << 'MOCK'
+#!/bin/bash
+echo "dig $*" >> "$TEST_TEMP_DIR/dig.log"
+name=""; type=""; auth=false
+for a in "$@"; do
+  case "$a" in
+    +authority) auth=true ;;
+    +*|@*) ;;
+    A|AAAA|SOA|NS) type="$a" ;;
+    *) name="$a" ;;
+  esac
+done
+if [[ "$name" == "." ]]; then
+  [[ -n "${DIG_RESOLVERS_DOWN:-}" ]] && exit 9
+  echo "a.root-servers.net."; exit 0
+fi
+if $auth; then cat "$DIG_DIR/$name.AUTH" 2>/dev/null; exit 0; fi
+cat "$DIG_DIR/$name.$type" 2>/dev/null
+exit 0
+MOCK
+  chmod +x "$TEST_TEMP_DIR/dig"
+  # kubectl mock: the gateway's status addresses
+  cat > "$TEST_TEMP_DIR/kubectl" << 'MOCK'
+#!/bin/bash
+echo "kubectl $*" >> "$TEST_TEMP_DIR/kubectl.log"
+cat "$KUBECTL_GATEWAY_ADDRESSES_FILE"
+MOCK
+}
+
+@test "check_domain_dns: a public domain pointing at the gateway passes, checked on a public resolver" {
+  dns_env public
+  printf 'lb-123.elb.amazonaws.com.\n10.0.0.1\n' > "$DIG_DIR/api.acme.com.A"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "points at gateway gateways/gateway-public"
+  assert_file_contains "$TEST_TEMP_DIR/dig.log" "@1.1.1.1 api.acme.com A"
+}
+
+@test "check_domain_dns: a private domain uses the agent's resolver" {
+  dns_env private
+  echo "10.0.0.9" > "$DIG_DIR/api.acme.com.A"
+  echo "10.0.0.9" > "$DIG_DIR/lb-123.elb.amazonaws.com.A"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "with the agent's resolver"
+  assert_output --partial "points at gateway"
+  run grep -c "@" "$TEST_TEMP_DIR/dig.log"
+  assert_output "0"
+}
+
+@test "check_domain_dns: a domain resolving elsewhere only warns" {
+  dns_env public
+  echo "203.0.113.7" > "$DIG_DIR/api.acme.com.A"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "WARNING: 'api.acme.com' doesn't point at gateway"
+}
+
+@test "check_domain_dns: tells a missing record from an unregistered domain" {
+  dns_env public
+  echo "acme.com. 900 IN SOA ns1.acme.com. hostmaster.acme.com. 1 2 3 4 5" > "$DIG_DIR/api.acme.com.AUTH"
+  run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+  assert_failure
+  assert_output --partial "has no A/AAAA/CNAME record in zone 'acme.com'"
+
+  echo "com. 900 IN SOA a.gtld-servers.net. nstld.verisign-grs.com. 1 2 3 4 5" > "$DIG_DIR/api.acme.com.AUTH"
+  run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+  assert_failure
+  assert_output --partial "doesn't exist in DNS: no zone serves it (only the TLD 'com')"
+}
+
+@test "check_domain_dns: warn mode reports a missing domain without failing" {
+  dns_env public
+  export DOMAIN_DNS_CHECK=warn
+
+  run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "WARNING: 'api.acme.com' doesn't exist in DNS"
+}
+
+@test "check_domain_dns: falls back to the agent's resolver when no public resolver replies" {
+  dns_env public
+  export DIG_RESOLVERS_DOWN=1
+  echo "lb-123.elb.amazonaws.com." > "$DIG_DIR/api.acme.com.A"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "no public resolver replied"
+  assert_output --partial "points at gateway"
+}
+
 @test "build_link_context: builds a single route on the service's domain" {
   run_context_script build_link_context LINK_ID DOMAIN_NAME GATEWAY_NAME APPLICATION_ID ROUTES_JSON
 
@@ -277,12 +391,22 @@ httproute_items() {
 @test "build_link_context: rejects invalid routes" {
   for params in \
     '{"path": "api/users", "methods": ["GET"], "groups": ["a"], "scope": "s"}' \
-    '{"path": "/api", "methods": [], "groups": ["a"], "scope": "s"}' \
     '{"path": "/api", "methods": ["FETCH"], "groups": ["a"], "scope": "s"}' \
     '{"path": "/api", "methods": ["GET"], "groups": [], "scope": "s"}'; do
     export CONTEXT="$(jq -c --argjson p "$params" '.parameters = $p' <<< "$(load_fixture link-notification)")"
     run_context_script build_link_context ROUTES_JSON
     assert_failure
+  done
+}
+
+@test "build_link_context: no verbs means ALL" {
+  for params in '{"path": "/api", "groups": ["a"], "scope": "s"}' '{"path": "/api", "methods": [], "groups": ["a"], "scope": "s"}'; do
+    export CONTEXT="$(jq -c --argjson p "$params" '.parameters = $p | .link.attributes = {}' <<< "$(load_fixture link-notification)")"
+
+    run_context_script build_link_context ROUTES_JSON
+
+    assert_success
+    assert_output --partial '"methods":["ALL"]'
   done
 }
 
@@ -374,16 +498,28 @@ scope_env() {
   assert_output --partial '"scope":"priv"'
 }
 
-@test "build_link_context: without a scope, fails when none or several scopes match" {
+@test "build_link_context: without a scope, fails when no scope matches" {
   scope_env '[{"id": 2, "slug": "priv", "reachability": "account"}]'
   run_context_script build_link_context ROUTES_JSON
   assert_failure
   assert_output --partial "no public scope running in Kubernetes"
 
-  scope_env '[{"id": 1, "slug": "a", "reachability": "public"}, {"id": 2, "slug": "b", "reachability": "public"}]'
-  run_context_script build_link_context ROUTES_JSON
-  assert_failure
-  assert_output --partial "several public scopes"
+}
+
+@test "build_link_context: without a scope, several matches pick active first, then the oldest" {
+  scope_env '[
+    {"id": 1, "slug": "old-failed", "reachability": "public", "status": "failed"},
+    {"id": 2, "slug": "newer",      "reachability": "public"},
+    {"id": 3, "slug": "older",      "reachability": "public"}
+  ]'
+  jq -c '.results |= map(.created_at = ({"1": "2024-01-01", "2": "2026-05-01", "3": "2025-03-01"}[.id | tostring]))' \
+    "$NP_SCOPE_LIST_FILE" > "$NP_SCOPE_LIST_FILE.tmp" && mv "$NP_SCOPE_LIST_FILE.tmp" "$NP_SCOPE_LIST_FILE"
+
+  run bash -c "source \"$SERVICE_PATH/scripts/istio/build_link_context\" && echo \"ROUTES_JSON=\$ROUTES_JSON\""
+
+  assert_success
+  assert_output --partial '"scope":"older"'
+  assert_output --partial "other public scopes also match: newer (active), old-failed (failed)"
 }
 
 @test "build_link_context: unlink only needs the link identity" {
@@ -556,6 +692,9 @@ conflict_env() {
   assert_success
   run jq -r '.attributes | "\(.auth_type)|\(.summary)"' "$TEST_TEMP_DIR/link-patch-body.json"
   assert_output "none|ALL | api.acme.com/health"
+  # The action results carry the same attributes: the platform writes them onto the link.
+  run jq -r '"\(.methods | join(","))|\(.scope)"' "$TEST_TEMP_DIR/link-action-results.json"
+  assert_output "ALL|users-prod"
 }
 
 @test "check_active_links: blocks the delete while links are active" {

@@ -1,6 +1,11 @@
 #!/bin/bash
 
 # Store the normalized route on the link, plus a summary and the endpoint it exposes.
+#
+# Stored twice: as the action results, which the platform writes onto the link's
+# attributes when the action finishes (otherwise it writes the raw parameters back,
+# e.g. empty verbs instead of ALL and an empty scope instead of the resolved one),
+# and patched on the link right away, so it is readable before the action ends.
 
 set -euo pipefail
 
@@ -24,6 +29,7 @@ ATTRIBUTES=$(echo "$LINK_ATTRIBUTES_JSON" | jq -c \
   }')
 
 echo "Storing link $LINK_ID results: $(echo "$ATTRIBUTES" | jq -r '.summary')"
+np link action update --results "$ATTRIBUTES"
 np link patch --id "$LINK_ID" --body "$(jq -n --argjson attributes "$ATTRIBUTES" '{attributes: $attributes}')"
 
 echo "✅ Link results stored"

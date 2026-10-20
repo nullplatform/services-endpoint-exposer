@@ -9,8 +9,7 @@
             "type": "object",
             "$schema": "http://json-schema.org/draft-07/schema#",
             "required": [
-                "path",
-                "methods"
+                "path"
             ],
             "uiSchema": {
                 "type": "VerticalLayout",
@@ -73,7 +72,8 @@
                         ]
                     },
                     "uniqueItems": true,
-                    "minItems": 1,
+                    "default": ["ALL"],
+                    "description": "HTTP methods exposed on this path. Defaults to ALL (any method); pick specific verbs to expose only those.",
                     "editableOn": ["create", "update"]
                 },
                 "groups": {
