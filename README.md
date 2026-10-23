@@ -183,6 +183,16 @@ module "endpoint_exposer_requirements" {
 | `PRIVATE_GATEWAY_NAME` | `gateway-private` | Name of the private Istio Gateway resource |
 | `GATEWAY_NAMESPACE` | `gateways` | Kubernetes namespace where Gateway resources live |
 
+#### Optional — applications in their own namespaces
+
+Each HTTPRoute is created in the namespace of the Services it routes to, so no ReferenceGrant is needed. The namespace of a scope is resolved by `scripts/istio/resolve_scope_namespace`, in this order:
+
+1. `NAMESPACE_OVERRIDE`, when set on the agent or channel (e.g. `{context.tags.namespace}`, the same value the scope agent uses).
+2. The namespace of the Services whose selector has the scope's `scope_id`, searched across the cluster.
+3. `nullplatform`, when the scope has no Service yet.
+
+All the routes of one exposer instance must point to scopes in the same namespace. For applications outside `nullplatform`, the agent needs cluster-wide `list` on `services` and `httproutes`, plus `create`, `patch` and `delete` on `httproutes` in those namespaces. The gateway listeners must also accept routes from them (`allowedRoutes.namespaces`). Without cluster-wide `list`, the exposer keeps the previous behavior and works in `nullplatform` only.
+
 #### Example — OpenTofu agent module
 
 ```hcl
