@@ -11,6 +11,11 @@
 # any AWS permissions — for AUTH_TYPE=aws-avp, also apply
 # specs/requirements/aws so the agent can assume a role that manages the
 # Verified Permissions policy store.
+#
+# The notification channels take no API key: nullplatform creates and manages
+# each channel's credential, scoped to dispatching commands to agents. The
+# identity running the apply must be able to assign the
+# controlplane:agent-dispatcher role (admin, ops or secops).
 ################################################################################
 
 module "endpoint_exposer" {
@@ -29,7 +34,6 @@ module "endpoint_exposer_channel" {
   source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=${var.tofu_modules_ref}"
 
   nrn                          = var.nrn
-  api_key                      = var.np_api_key
   tags_selectors               = var.tags_selectors
   service_specification_slug   = module.endpoint_exposer.service_specification_slug
   repository_service_spec_repo = "${var.repository_org}/${var.repository_name}"
@@ -42,7 +46,6 @@ module "endpoint_exposer_scope_channel" {
   source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/scope_definition_agent_association?ref=${var.tofu_modules_ref}"
 
   nrn                      = var.nrn
-  api_key                  = var.np_api_key
   tags_selectors           = var.tags_selectors
   scope_specification_id   = var.scope_specification_id
   scope_specification_slug = var.scope_specification_slug
