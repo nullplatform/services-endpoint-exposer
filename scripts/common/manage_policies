@@ -73,8 +73,10 @@ case "$AUTH_TYPE" in
         source "$SERVICE_PATH/scripts/np/update_service_results"
         ;;
       sync)
-        source "$SERVICE_PATH/scripts/istio/delete_allow_policies"
+        # In place, as with aws-cognito: deleting first left a window of 403s
+        # on the service's own routes.
         source "$SERVICE_PATH/scripts/istio/build_allow_policies"
+        source "$SERVICE_PATH/scripts/istio/replace_allow_policies"
         source "$SERVICE_PATH/scripts/np/update_service_results"
         ;;
       delete)
