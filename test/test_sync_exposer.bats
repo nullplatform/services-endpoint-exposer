@@ -24,6 +24,9 @@ setup() {
   cat > "$TEST_TEMP_DIR/np" << 'EOF'
 #!/bin/bash
 printf '%s\n' "$*" >> "$NP_CALLS"
+# Like the np CLI in the controlplane-agent image (aws-0.7.0).
+if [[ " $* " == *" --specification-id "* ]]; then echo "Error: unknown flag: --specification-id" >&2; exit 1; fi
+[[ -n "${NP_FAIL:-}" && "$*" == "$NP_FAIL"* ]] && exit 1
 case "$*" in
   "service specification action specification list"*)
     echo "{\"results\":[{\"id\":\"action-spec-1\",\"slug\":\"update-$NP_SPEC_SLUG\"}]}" ;;
@@ -130,4 +133,14 @@ teardown() {
   run bash "$SCRIPT"
 
   assert_failure
+}
+
+@test "sync_exposer: fails the deploy step when the services can't be listed" {
+  export NP_FAIL="service list"
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "could not list the services"
+  ! grep -q "service action create" "$NP_CALLS"
 }

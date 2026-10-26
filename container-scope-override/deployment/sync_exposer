@@ -50,11 +50,17 @@ main() {
 
   # Exposers of the application that route to the deployed scope (all of them
   # when the scope isn't known).
-  EXPOSERS=$(np service list --nrn "$APPLICATION_NRN" --specification-id "$SERVICE_SPEC_ID" --all --format json \
-    | jq -c --arg spec "$SERVICE_SPEC_ID" --arg scope "$DEPLOYED_SCOPE_SLUG" '
+  # Only --nrn: the np CLI in the controlplane-agent image (aws-0.7.0) rejects
+  # --specification-id, and an empty list here would silently skip the sync.
+  # The jq filter keeps only this spec's services.
+  if ! SERVICES=$(np service list --nrn "$APPLICATION_NRN" --format json); then
+    echo "Error: could not list the services of $APPLICATION_NRN"
+    exit 1
+  fi
+  EXPOSERS=$(jq -c --arg spec "$SERVICE_SPEC_ID" --arg scope "$DEPLOYED_SCOPE_SLUG" '
         [.results[]
           | select(.specification_id == $spec)
-          | select($scope == "" or ([.attributes.routes[]?.scope] | index($scope)))]')
+          | select($scope == "" or ([.attributes.routes[]?.scope] | index($scope)))]' <<< "$SERVICES")
 
   if [[ "$(jq 'length' <<< "$EXPOSERS")" -eq 0 ]]; then
     echo "No endpoint exposer routes to this scope, skipping exposer sync"
