@@ -135,3 +135,22 @@ EOF2
   assert_success
   [[ "$(written_not_hosts)" == '["a.example.com","a.example.com:*","new.example.com","new.example.com:*"]' ]]
 }
+
+@test "baseline: also kept with AUTH_TYPE=none, whose ALLOW policies select the gateway too" {
+  export AUTH_TYPE="none"
+
+  run bash "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
+
+  assert_success
+  [[ "$(written_not_hosts)" == '["a.example.com","a.example.com:*"]' ]]
+}
+
+@test "baseline: not needed with aws-avp, which renders no Istio ALLOW policies" {
+  export AUTH_TYPE="aws-avp"
+
+  run bash "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
+
+  assert_success
+  assert_output --partial "no baseline needed"
+  [[ ! -s "$KUBECTL_CALLS" ]]
+}

@@ -10,7 +10,8 @@ set -euo pipefail
 # on the same gateway into 403s. For each gateway this keeps one extra ALLOW
 # policy that admits requests to every host the exposer doesn't manage
 # (notHosts). Hosts the exposer manages keep their behaviour: declared routes
-# need their groups, everything else on them is denied.
+# need their groups (none with AUTH_TYPE=none), everything else on them is
+# denied.
 #
 # Safety rules, because a host missing from notHosts is admitted without auth:
 # - hosts are only ever added by union with the current baseline, written
@@ -27,7 +28,8 @@ set -euo pipefail
 main() {
   source "$SERVICE_PATH/scripts/istio/config"
 
-  if [[ "${AUTH_TYPE:-}" != "aws-cognito" ]]; then
+  # AUTH_TYPE=none renders unconditional ALLOW policies on the gateway too.
+  if [[ "${AUTH_TYPE:-}" != "aws-cognito" && "${AUTH_TYPE:-}" != "none" ]]; then
     echo "AUTH_TYPE=${AUTH_TYPE:-} doesn't use Istio ALLOW policies, no baseline needed"
     return 0
   fi
