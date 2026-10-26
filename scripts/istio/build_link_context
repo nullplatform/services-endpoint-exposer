@@ -1,16 +1,16 @@
 #!/bin/bash
 
-# Build Link Context (domain model): a link exposes one path of the linking
+# Build Link Context (domain model): a link exposes the paths of the linking
 # application on the domain of the service it is linked to.
 #
 #   service attributes: domain_name, visibility
-#   link attributes:    path, methods (optional: ALL by default),
-#                       groups (optional with AUTH_TYPE=none),
-#                       scope (optional: resolved from the service's visibility)
+#   link attributes:    routes: [{path, methods (optional: ALL by default),
+#                                 groups (optional with AUTH_TYPE=none),
+#                                 scope (optional: resolved from the service's visibility)}]
 #
-# Exports ROUTES_JSON as a one-element array in the same shape the legacy model
-# uses ({path, methods, groups, scope, visibility}), so process_routes, build_rule
-# and build_allow_policies are reused unchanged.
+# Exports ROUTES_JSON in the same shape the legacy model uses
+# ({path, methods, groups, scope, visibility}), so process_routes, build_rule and
+# build_allow_policies are reused unchanged.
 #
 # LINK_OPERATION (workflow configuration):
 #   apply  - link create/update: validates the route (default)
@@ -80,39 +80,58 @@ else
   GATEWAY_NAME="$PUBLIC_GATEWAY_NAME"
 fi
 
-# --- Link side: the route this link exposes ---------------------------------------
+# --- Link side: the routes this link exposes --------------------------------------
 
 # Parameters of the running action win over the stored link attributes (update).
 LINK_ATTRIBUTES_JSON=$(echo "$CONTEXT" | jq -c '(.link.attributes // {}) * (.parameters // {})')
 
-ROUTE=$(echo "$LINK_ATTRIBUTES_JSON" | jq -c \
+# The platform allows a single link per application and dimensions, so a link
+# carries every path the application exposes on the domain. Links created before
+# the list held one route in top-level path/methods/groups/scope: read them as a
+# one-route list.
+ROUTES_JSON=$(echo "$LINK_ATTRIBUTES_JSON" | jq -c \
   --arg visibility "$VISIBILITY" \
   --arg link_scope "$(echo "$CONTEXT" | jq -r '.link.scope.slug // ""')" '
-  {
-    path: (.path // ""),
-    methods: ((.methods // (if .method then [.method] else [] end))
-      | if length == 0 then ["ALL"] else . end),
-    groups: (.groups |
-      if type == "array" then .
-      elif type == "string" then split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))
-      else [] end),
-    scope: (if (.scope // "") != "" then .scope else $link_scope end),
-    visibility: (if $visibility == "private" then "internal" else "public" end)
-  }')
+  def group_list:
+    if type == "array" then .
+    elif type == "string" then split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))
+    else [] end;
+  (if ((.routes // []) | length) > 0 then .routes
+   elif (.path // "") != "" then [{path, methods, method, groups, scope}]
+   else [] end)
+  | map({
+      path: (.path // ""),
+      methods: ((.methods // (if .method then [.method] else [] end))
+        | if length == 0 then ["ALL"] else . end),
+      groups: (.groups | group_list),
+      scope: (if (.scope // "") != "" then .scope else $link_scope end),
+      visibility: (if $visibility == "private" then "internal" else "public" end)
+    })')
 
-ROUTE_PATH=$(echo "$ROUTE" | jq -r '.path')
-ROUTE_SCOPE=$(echo "$ROUTE" | jq -r '.scope')
-
-if [[ ! "$ROUTE_PATH" =~ ^/[a-zA-Z0-9_./:*{}-]*$ ]]; then
-  echo "ERROR: path '$ROUTE_PATH' must start with / (e.g. /api/users, /items/:id, /files/*)" >&2
+if [[ "$(echo "$ROUTES_JSON" | jq 'length')" -eq 0 ]]; then
+  echo "ERROR: the link has no routes: add at least one path" >&2
   exit 1
 fi
 
-INVALID_METHODS=$(echo "$ROUTE" | jq -r '
-  .methods - ["ALL", "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] | join(", ")')
+INVALID_PATHS=$(echo "$ROUTES_JSON" | jq -r '
+  map(.path | select(test("^/[a-zA-Z0-9_./:*{}-]*$") | not) | if . == "" then "(empty)" else . end) | join(", ")')
+if [[ -n "$INVALID_PATHS" ]]; then
+  echo "ERROR: paths must start with / (e.g. /api/users, /items/:id, /files/*); invalid: $INVALID_PATHS" >&2
+  exit 1
+fi
+
+INVALID_METHODS=$(echo "$ROUTES_JSON" | jq -r '
+  [.[].methods[]] - ["ALL", "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] | unique | join(", ")')
 # No verbs means every verb (ALL) was normalized above, so only unknown verbs fail.
 if [[ -n "$INVALID_METHODS" ]]; then
   echo "ERROR: methods must be a subset of ALL, GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS (invalid: '${INVALID_METHODS}')" >&2
+  exit 1
+fi
+
+# A path is one route: two items with the same path would render competing rules.
+DUPLICATE_PATHS=$(echo "$ROUTES_JSON" | jq -r 'group_by(.path) | map(select(length > 1) | .[0].path) | join(", ")')
+if [[ -n "$DUPLICATE_PATHS" ]]; then
+  echo "ERROR: paths declared more than once in the link: $DUPLICATE_PATHS. Merge their verbs into a single route." >&2
   exit 1
 fi
 
@@ -128,30 +147,30 @@ if [[ -z "$APPLICATION_ID" ]]; then
   exit 1
 fi
 
-# Without a scope on the link, use the application's scope matching the service's
-# visibility (see resolve_link_scope).
-if [[ -z "$ROUTE_SCOPE" ]]; then
+# Routes without a scope use the application's scope matching the service's
+# visibility (see resolve_link_scope), resolved once for the whole link.
+if [[ "$(echo "$ROUTES_JSON" | jq 'any(.[]; .scope == "")')" == "true" ]]; then
   source "$SERVICE_PATH/scripts/istio/resolve_link_scope"
-  ROUTE=$(echo "$ROUTE" | jq -c --arg scope "$ROUTE_SCOPE" '.scope = $scope')
+  ROUTES_JSON=$(echo "$ROUTES_JSON" | jq -c --arg scope "$ROUTE_SCOPE" 'map(if .scope == "" then .scope = $scope else . end)')
 fi
 
-ROUTES_JSON=$(echo "$ROUTE" | jq -c '[.]')
-
 # resolve_auth also rejects a route without groups unless AUTH_TYPE=none: with auth,
-# an ALLOW policy without groups would let any request through on this path.
+# an ALLOW policy without groups would let any request through on that path.
 ENV_DIMENSION=$(echo "$CONTEXT" | jq -r --argjson service "$SERVICE_JSON" '
   .service.dimensions.environment // .link.dimensions.environment // $service.dimensions.environment // ""')
 source "$SERVICE_PATH/scripts/istio/resolve_auth"
 
 # No JWT is validated with AUTH_TYPE=none, so a cognito:groups condition could never
-# match: drop the groups so the policy allows the path without auth. Any other mode
+# match: drop the groups so the policies allow the paths without auth. Any other mode
 # fails closed here too, whatever resolve_auth exempted.
 if [[ "$AUTH_TYPE" == "none" ]]; then
-  ROUTE=$(echo "$ROUTE" | jq -c '.groups = []')
-  ROUTES_JSON=$(echo "$ROUTE" | jq -c '[.]')
-elif [[ "$(echo "$ROUTE" | jq '(.groups // []) | length')" -eq 0 ]]; then
-  echo "ERROR: at least one authorized group is required unless AUTH_TYPE=none" >&2
-  exit 1
+  ROUTES_JSON=$(echo "$ROUTES_JSON" | jq -c 'map(.groups = [])')
+else
+  ROUTES_WITHOUT_GROUPS=$(echo "$ROUTES_JSON" | jq -r 'map(select((.groups // []) | length == 0) | .path) | join(", ")')
+  if [[ -n "$ROUTES_WITHOUT_GROUPS" ]]; then
+    echo "ERROR: at least one authorized group is required unless AUTH_TYPE=none; routes without groups: $ROUTES_WITHOUT_GROUPS" >&2
+    exit 1
+  fi
 fi
 
 if [[ "$AUTH_TYPE" == "aws-avp" ]]; then
@@ -159,7 +178,8 @@ if [[ "$AUTH_TYPE" == "aws-avp" ]]; then
   exit 1
 fi
 
-echo "Link $LINK_ID: $(echo "$ROUTE" | jq -r '.methods | join(",")') $DOMAIN_NAME$ROUTE_PATH → scope $ROUTE_SCOPE (app $APPLICATION_ID, gateway $GATEWAY_NAME)"
+echo "Link $LINK_ID (app $APPLICATION_ID, gateway $GATEWAY_NAME), $(echo "$ROUTES_JSON" | jq 'length') route(s):"
+echo "$ROUTES_JSON" | jq -r --arg domain "$DOMAIN_NAME" '.[] | "  \(.methods | join(",")) \($domain)\(.path) → scope \(.scope)"'
 
 export APPLICATION_ID
 export DOMAIN_NAME

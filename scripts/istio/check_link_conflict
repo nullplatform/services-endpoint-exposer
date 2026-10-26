@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Check Link Conflict: a (domain, path, method) can be claimed by a single link.
+# Every route of the link is checked.
 # Gateway API would otherwise resolve the overlap silently in favor of the oldest
 # HTTPRoute, so the newer link would look healthy while receiving no traffic.
 #
@@ -12,14 +13,17 @@ set -euo pipefail
 
 source "$SERVICE_PATH/scripts/istio/path_utils"
 
-ROUTE=$(echo "$ROUTES_JSON" | jq -c '.[0]')
-ROUTE_PATH=$(echo "$ROUTE" | jq -r '.path')
-METHODS_JSON=$(echo "$ROUTE" | jq -c '.methods')
+# Each route claims its Gateway API match value (the same conversion the HTTPRoute
+# builders use) for its methods.
+CLAIMS="[]"
+while IFS= read -r ROUTE; do
+  ROUTE_PATH=$(echo "$ROUTE" | jq -r '.path')
+  PATH_TYPE_VALUE=$(detect_path_type "$ROUTE_PATH")
+  CLAIMS=$(echo "$CLAIMS" | jq -c --arg path "${PATH_TYPE_VALUE#*:}" --argjson methods "$(echo "$ROUTE" | jq -c '.methods')" \
+    '. + [{path: $path, methods: $methods}]')
+done < <(echo "$ROUTES_JSON" | jq -c '.[]')
 
-PATH_TYPE_VALUE=$(detect_path_type "$ROUTE_PATH")
-MATCH_VALUE="${PATH_TYPE_VALUE#*:}"
-
-echo "Checking conflicts for $METHODS_JSON $DOMAIN_NAME$MATCH_VALUE..."
+echo "Checking conflicts on $DOMAIN_NAME for: $(echo "$CLAIMS" | jq -r 'map("\(.methods | join(",")) \(.path)") | join("; ")')"
 
 if ! HTTPROUTES=$(kubectl get httproute -n "$K8S_NAMESPACE" \
     -l "nullplatform.com/managed-by=http-route-access-control" -o json 2>&1); then
@@ -42,27 +46,29 @@ if [[ -n "$FOREIGN_SERVICES" ]]; then
   exit 1
 fi
 
-# One line per overlapping HTTPRoute: "<name>\t<method or *>\t<link-id or empty>".
+# One line per overlapping rule: "<name>\t<method or *>\t<path>\t<link-id or empty>".
 # The link id goes last: read collapses consecutive tabs, so an empty field in the
 # middle would shift the others.
 OVERLAPS=$(echo "$HTTPROUTES" | jq -r \
   --arg host "$DOMAIN_NAME" \
-  --arg path "$MATCH_VALUE" \
   --arg link_id "$LINK_ID" \
-  --argjson methods "$METHODS_JSON" '
+  --argjson claims "$CLAIMS" '
   .items[]
   | select((.spec.hostnames // []) | index($host))
   | select(.metadata.labels["nullplatform.com/link-id"] != $link_id)
   | . as $route
   | .spec.rules[]?.matches[]?
-  | select(.path.value == $path)
-  | (.method // null) as $method
-  | select($method == null or ($methods | index("ALL")) or ($methods | index($method)))
-  | [$route.metadata.name, ($method // "*"), ($route.metadata.labels["nullplatform.com/link-id"] // "")]
-  | @tsv')
+  | . as $match
+  | $claims[]
+  | select(.path == $match.path.value)
+  | . as $claim
+  | ($match.method // null) as $method
+  | select($method == null or ($claim.methods | index("ALL")) or ($claim.methods | index($method)))
+  | [$route.metadata.name, ($method // "*"), $claim.path, ($route.metadata.labels["nullplatform.com/link-id"] // "")]
+  | @tsv' | sort -u)
 
 CONFLICT=false
-while IFS=$'\t' read -r ROUTE_NAME METHOD OTHER_LINK_ID; do
+while IFS=$'\t' read -r ROUTE_NAME METHOD MATCH_VALUE OTHER_LINK_ID; do
   [[ -z "$ROUTE_NAME" ]] && continue
   if [[ -n "$OTHER_LINK_ID" ]]; then
     echo "ERROR: $METHOD $DOMAIN_NAME$MATCH_VALUE is already exposed by link $OTHER_LINK_ID (HTTPRoute $ROUTE_NAME)" >&2

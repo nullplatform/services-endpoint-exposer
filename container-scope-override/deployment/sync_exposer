@@ -6,7 +6,7 @@
 # scope is rebuilt by re-running the action that owns it:
 #
 #   - links (domain + links model): the update action of each active link of this
-#     application whose route targets the scope being deployed
+#     application with a route that targets the scope being deployed
 #   - legacy services (routes declared inline on the service): the service update
 #     action, as before
 
@@ -126,9 +126,11 @@ LINKS=$(np link list --nrn "$APPLICATION_NRN" --status active --limit 200 --form
 while IFS= read -r LINK; do
   [[ -z "$LINK" ]] && continue
   LINK_ID=$(jq -r .id <<< "$LINK")
-  LINK_SCOPE=$(jq -r '.attributes.scope // empty' <<< "$LINK")
+  # Every route stores its resolved scope; links created before the routes list
+  # kept a single one at the top level.
+  LINK_SCOPES=$(jq -r '[.attributes.routes[]?.scope, .attributes.scope] | map(select(. != null and . != "")) | unique | join(",")' <<< "$LINK")
 
-  if [[ -n "$SCOPE_SLUG" && "$LINK_SCOPE" != "$SCOPE_SLUG" ]]; then
+  if [[ -n "$SCOPE_SLUG" && ",$LINK_SCOPES," != *",$SCOPE_SLUG,"* ]]; then
     continue
   fi
 
@@ -150,10 +152,10 @@ while IFS= read -r LINK; do
     exit 1
   fi
 
-  # endpoint and summary are outputs of the link action, not inputs
-  LINK_PARAMETERS=$(jq -c '.attributes | del(.endpoint, .summary)' <<< "$LINK")
+  # endpoints and summaries are outputs of the link action, not inputs
+  LINK_PARAMETERS=$(jq -c '.attributes | del(.endpoint, .endpoints, .summary, .auth_type) | if .routes then .routes |= map(del(.summary)) else . end' <<< "$LINK")
 
-  echo "Syncing link $LINK_ID (scope $LINK_SCOPE) of service $LINK_SERVICE_ID"
+  echo "Syncing link $LINK_ID (scopes $LINK_SCOPES) of service $LINK_SERVICE_ID"
   run_action_and_wait link "$LINK_ID" "$LINK_ACTION_SPEC_ID" "$LINK_PARAMETERS" || exit 1
   ((SYNCED++))
 done < <(jq -c '.[]' <<< "$LINKS")

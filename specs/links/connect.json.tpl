@@ -9,88 +9,82 @@
             "type": "object",
             "$schema": "http://json-schema.org/draft-07/schema#",
             "required": [
-                "path"
+                "routes"
             ],
             "uiSchema": {
                 "type": "VerticalLayout",
                 "elements": [
                     {
-                        "type": "HorizontalLayout",
-                        "elements": [
-                            {
-                                "type": "Control",
-                                "label": "Path",
-                                "scope": "#/properties/path"
-                            },
-                            {
-                                "type": "Control",
-                                "label": "Scope",
-                                "scope": "#/properties/scope"
-                            }
-                        ]
-                    },
-                    {
                         "type": "Control",
-                        "label": "Verbs",
-                        "scope": "#/properties/methods"
-                    },
-                    {
-                        "type": "Control",
-                        "label": "Authorized Groups",
-                        "scope": "#/properties/groups"
+                        "label": "Routes",
+                        "scope": "#/properties/routes"
                     }
                 ]
             },
             "properties": {
-                "path": {
-                    "type": "string",
-                    "title": "Path",
-                    "pattern": "^/([a-zA-Z0-9_\\-\\.:\\*{}/]*)?$",
-                    "description": "Path exposed on the service's domain. Must start with /. Examples: /api/users, /items/:id, /files/*",
-                    "editableOn": ["create", "update"]
-                },
-                "scope": {
-                    "type": "string",
-                    "title": "Scope",
-                    "description": "Slug of the scope that receives the traffic of this path. Leave empty to use the application's scope whose visibility matches the service (public or private) in the link's dimensions.",
-                    "editableOn": ["create", "update"]
-                },
-                "methods": {
+                "routes": {
                     "type": "array",
-                    "title": "Verbs",
+                    "title": "Routes",
+                    "description": "Paths of this application exposed on the service's domain. Add one item per path.",
+                    "minItems": 1,
+                    "editableOn": ["create", "update"],
                     "items": {
-                        "type": "string",
-                        "enum": [
-                            "ALL",
-                            "GET",
-                            "POST",
-                            "PUT",
-                            "PATCH",
-                            "DELETE",
-                            "HEAD",
-                            "OPTIONS"
-                        ]
-                    },
-                    "uniqueItems": true,
-                    "default": ["ALL"],
-                    "description": "HTTP methods exposed on this path. Defaults to ALL (any method); pick specific verbs to expose only those.",
-                    "editableOn": ["create", "update"]
+                        "type": "object",
+                        "required": [
+                            "path"
+                        ],
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "title": "Path",
+                                "pattern": "^/([a-zA-Z0-9_\\-\\.:\\*{}/]*)?$",
+                                "description": "Must start with /. Examples: /api/users, /items/:id, /files/*"
+                            },
+                            "methods": {
+                                "type": "array",
+                                "title": "Verbs",
+                                "description": "HTTP methods exposed on this path. Defaults to ALL (any method); pick specific verbs to expose only those.",
+                                "items": {
+                                    "type": "string",
+                                    "enum": [
+                                        "ALL",
+                                        "GET",
+                                        "POST",
+                                        "PUT",
+                                        "PATCH",
+                                        "DELETE",
+                                        "HEAD",
+                                        "OPTIONS"
+                                    ]
+                                },
+                                "uniqueItems": true,
+                                "default": ["ALL"]
+                            },
+                            "scope": {
+                                "type": "string",
+                                "title": "Scope",
+                                "description": "Slug of the scope that receives the traffic of this path. Leave empty to use the application's scope whose visibility matches the service (public or private) in the link's dimensions."
+                            },
+                            "groups": {
+                                "type": "array",
+                                "title": "Authorized Groups",
+                                "description": "Groups allowed to call this path. Add each group name and press Add. Required unless authentication is disabled for this installation.",
+                                "items": {
+                                    "type": "string",
+                                    "pattern": "^[a-zA-Z0-9_-]+$"
+                                },
+                                "uniqueItems": true
+                            }
+                        }
+                    }
                 },
-                "groups": {
+                "endpoints": {
                     "type": "array",
-                    "title": "Authorized Groups",
-                    "description": "Groups allowed to call this path. Add each group name and press Add. Required unless authentication is disabled for this installation.",
+                    "title": "Endpoints",
+                    "description": "Domain and path of every route this link exposes.",
                     "items": {
-                        "type": "string",
-                        "pattern": "^[a-zA-Z0-9_-]+$"
+                        "type": "string"
                     },
-                    "uniqueItems": true,
-                    "editableOn": ["create", "update"]
-                },
-                "endpoint": {
-                    "type": "string",
-                    "title": "Endpoint",
-                    "description": "Domain and path this link exposes.",
                     "editableOn": [],
                     "visibleOn": ["read"]
                 },

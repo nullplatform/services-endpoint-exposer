@@ -522,6 +522,82 @@ scope_env() {
   assert_output --partial "other public scopes also match: newer (active), old-failed (failed)"
 }
 
+# --- routes list ---
+
+routes_context() {
+  export CONTEXT="$(jq -c --argjson routes "$1" '.parameters = {routes: $routes} | .link.attributes = {}' <<< "$(load_fixture link-notification)")"
+}
+
+@test "build_link_context: a routes list builds one route per item" {
+  routes_context '[
+    {"path": "/api/v1/clientes", "methods": ["ALL"], "groups": ["admin"], "scope": "users-prod"},
+    {"path": "/health", "groups": ["ops"], "scope": "health-prod"}]'
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  assert_output --partial 'ROUTES_JSON=[{"path":"/api/v1/clientes","methods":["ALL"],"groups":["admin"],"scope":"users-prod","visibility":"public"},{"path":"/health","methods":["ALL"],"groups":["ops"],"scope":"health-prod","visibility":"public"}]'
+}
+
+@test "build_link_context: the routes list wins over a stale single route" {
+  export CONTEXT="$(jq -c '.link.attributes = {path: "/old", methods: ["GET"], groups: ["admin"], scope: "users-prod"}
+    | .parameters = {routes: [{path: "/new", groups: ["admin"], scope: "users-prod"}]}' <<< "$CONTEXT")"
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  assert_output --partial '"path":"/new"'
+  [[ "$output" != *'"/old"'* ]]
+}
+
+@test "build_link_context: routes without a scope share the resolved one, explicit scopes stay" {
+  scope_env '[{"id": 1, "slug": "pub", "reachability": "public"}]'
+  export CONTEXT="$(jq -c '.parameters = {routes: [{path: "/a", groups: ["g"]}, {path: "/b", groups: ["g"], scope: "other"}]} | .link.attributes = {}' <<< "$CONTEXT")"
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  assert_output --partial '{"path":"/a","methods":["ALL"],"groups":["g"],"scope":"pub"'
+  assert_output --partial '{"path":"/b","methods":["ALL"],"groups":["g"],"scope":"other"'
+}
+
+@test "build_link_context: rejects an empty list, duplicated paths and invalid paths" {
+  routes_context '[]'
+  run_context_script build_link_context ROUTES_JSON
+  assert_failure
+  assert_output --partial "the link has no routes"
+
+  routes_context '[{"path": "/a", "methods": ["GET"], "groups": ["g"], "scope": "s"}, {"path": "/a", "methods": ["POST"], "groups": ["g"], "scope": "s"}]'
+  run_context_script build_link_context ROUTES_JSON
+  assert_failure
+  assert_output --partial "paths declared more than once in the link: /a"
+
+  routes_context '[{"path": "/ok", "groups": ["g"], "scope": "s"}, {"path": "bad", "groups": ["g"], "scope": "s"}, {"path": "", "groups": ["g"], "scope": "s"}]'
+  run_context_script build_link_context ROUTES_JSON
+  assert_failure
+  assert_output --partial "invalid: bad, (empty)"
+}
+
+@test "build_link_context: aws-cognito names the routes without groups" {
+  routes_context '[{"path": "/a", "groups": ["g"], "scope": "s"}, {"path": "/b", "scope": "s"}]'
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_failure
+  assert_output --partial "/b"
+}
+
+@test "build_link_context: AUTH_TYPE=none drops the groups of every route" {
+  export AUTH_TYPE=none
+  routes_context '[{"path": "/a", "groups": ["g"], "scope": "s"}, {"path": "/b", "scope": "s"}]'
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  run bash -c "source \"$SERVICE_PATH/scripts/istio/build_link_context\" >/dev/null && echo \"\$ROUTES_JSON\" | jq -c 'map(.groups)'"
+  assert_output "[[],[]]"
+}
+
 @test "build_link_context: unlink only needs the link identity" {
   export CONTEXT="$(jq -c '.parameters = {} | .service.attributes = {} | .service.dimensions = {}' <<< "$CONTEXT")"
   export LINK_OPERATION=delete
@@ -577,6 +653,19 @@ conflict_env() {
 
   assert_failure
   assert_output --partial "already exposed by link link-other"
+}
+
+@test "check_link_conflict: checks every route of the link" {
+  export DOMAIN_NAME=api.acme.com SERVICE_ID=svc-1234 LINK_ID=link-5678 K8S_NAMESPACE=nullplatform
+  export ROUTES_JSON='[{"path": "/free", "methods": ["GET"]}, {"path": "/taken", "methods": ["ALL"]}]'
+  export KUBECTL_HTTPROUTES_FILE="$TEST_TEMP_DIR/httproutes.json"
+  httproute_items '[{"name": "r1", "link_id": "link-other", "host": "api.acme.com", "path": "/taken", "method": "DELETE"}]' > "$KUBECTL_HTTPROUTES_FILE"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_link_conflict"
+
+  assert_failure
+  assert_output --partial "DELETE api.acme.com/taken is already exposed by link link-other"
+  [[ "$output" != *"/free is already"* ]]
 }
 
 @test "check_link_conflict: passes for its own route, other methods, paths and domains" {
@@ -670,30 +759,32 @@ conflict_env() {
 
 # --- np results --------------------------------------------------------------
 
-@test "update_link_results: stores the normalized route, endpoint and summary on the link" {
+@test "update_link_results: stores the routes list, endpoints and summary, dropping the legacy single route" {
   export LINK_ID=link-5678 DOMAIN_NAME=api.acme.com
-  export LINK_ATTRIBUTES_JSON='{"path": "/api/users/*", "method": "GET", "groups": "admin", "scope": "users-prod"}'
-  export ROUTES_JSON='[{"path": "/api/users/*", "methods": ["GET"], "groups": ["admin"], "scope": "users-prod", "visibility": "public"}]'
+  export LINK_ATTRIBUTES_JSON='{"path": "/old", "method": "GET", "groups": "admin", "scope": "users-prod", "endpoint": "api.acme.com/old"}'
+  export ROUTES_JSON='[
+    {"path": "/api/users/*", "methods": ["GET"], "groups": ["admin"], "scope": "users-prod", "visibility": "public"},
+    {"path": "/health", "methods": ["ALL"], "groups": ["ops"], "scope": "users-prod", "visibility": "public"}]'
 
   run bash "$SERVICE_PATH/scripts/np/update_link_results"
 
   assert_success
-  run jq -r '.attributes | "\(.endpoint)|\(.summary)|\(.methods | join(","))|\(.groups | join(","))"' "$TEST_TEMP_DIR/link-patch-body.json"
-  assert_output "api.acme.com/api/users/*|GET | api.acme.com/api/users/* | admin|GET|admin"
+  run jq -c '.attributes | {routes: (.routes | map({path, methods, scope, summary})), endpoints, summary, legacy: [.path, .method, .groups, .scope, .endpoint]}' "$TEST_TEMP_DIR/link-patch-body.json"
+  assert_output '{"routes":[{"path":"/api/users/*","methods":["GET"],"scope":"users-prod","summary":"GET | api.acme.com/api/users/* | admin"},{"path":"/health","methods":["ALL"],"scope":"users-prod","summary":"ALL | api.acme.com/health | ops"}],"endpoints":["api.acme.com/api/users/*","api.acme.com/health"],"summary":"GET /api/users/*; ALL /health","legacy":[null,null,null,null,null]}'
 }
 
-@test "update_link_results: stores the auth_type and omits empty groups from the summary" {
+@test "update_link_results: stores the auth_type and the same attributes as action results" {
   export LINK_ID=link-5678 DOMAIN_NAME=api.acme.com AUTH_TYPE=none
-  export LINK_ATTRIBUTES_JSON='{"path": "/health", "methods": ["ALL"], "scope": "users-prod"}'
+  export LINK_ATTRIBUTES_JSON='{"routes": [{"path": "/health"}]}'
   export ROUTES_JSON='[{"path": "/health", "methods": ["ALL"], "groups": [], "scope": "users-prod", "visibility": "public"}]'
 
   run bash "$SERVICE_PATH/scripts/np/update_link_results"
 
   assert_success
-  run jq -r '.attributes | "\(.auth_type)|\(.summary)"' "$TEST_TEMP_DIR/link-patch-body.json"
+  run jq -r '"\(.attributes.auth_type)|\(.attributes.routes[0].summary)"' "$TEST_TEMP_DIR/link-patch-body.json"
   assert_output "none|ALL | api.acme.com/health"
   # The action results carry the same attributes: the platform writes them onto the link.
-  run jq -r '"\(.methods | join(","))|\(.scope)"' "$TEST_TEMP_DIR/link-action-results.json"
+  run jq -r '"\(.routes[0].methods | join(","))|\(.routes[0].scope)"' "$TEST_TEMP_DIR/link-action-results.json"
   assert_output "ALL|users-prod"
 }
 

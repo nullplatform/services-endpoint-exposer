@@ -4,7 +4,7 @@ A nullplatform service that manages dynamic exposure of application endpoints th
 
 ## What it does
 
-Developers create a service for a domain, then link each application to it declaring which path it exposes, which nullplatform scope backs it, and which user groups are allowed to call it. The service handles the rest:
+Developers create a service for a domain, then link each application to it declaring which paths it exposes, which nullplatform scope backs each one, and which user groups are allowed to call them. The service handles the rest:
 
 - Creates **HTTPRoutes** (Kubernetes Gateway API v1) pointing to the right backend service
 - Creates **AuthorizationPolicies** enforcing group-based access control
@@ -30,7 +30,7 @@ In this mode `Authorized Groups` is ignored and can be left empty, and no `COGNI
 
 ## Route configuration (developer UI)
 
-Exposing endpoints takes two steps: a **service** owns a domain, and each **link** exposes one path of the linking application on that domain.
+Exposing endpoints takes two steps: a **service** owns a domain, and each **link** exposes the paths of the linking application on that domain.
 
 ### 1. Create the service — the domain
 
@@ -50,16 +50,20 @@ The domain must exist in DNS wherever it is hosted (Route 53, GoDaddy, Cloudflar
 
 A domain that doesn't resolve fails the create, telling apart a domain that isn't registered (only the TLD answers) from a zone that lacks the record. A domain that resolves but not to the gateway's address only warns: a CDN or proxy may forward to it, but usually requests would never reach the routes. `DOMAIN_DNS_CHECK=warn` reports without failing, `off` skips the check.
 
-### 2. Link an application — one path
+### 2. Link an application — its routes
 
-| Field | Description |
+nullplatform allows a single link per application and dimensions, so the link carries a **list of routes**, one item per path the application exposes on the domain:
+
+| Route field | Description |
 |---|---|
-| **Path** | Path on the service's domain. Supports exact (`/api/users`), parameterized (`/api/users/:id`) and wildcard (`/api/users/*`) |
-| **Verbs** | Optional, `ALL` (any method) by default. Pick HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) to expose only those. `ALL` overrides any other verb selected on the same link |
-| **Scope** | Optional. Slug of the linking application's scope that receives the traffic. When empty, the agent picks the application's scope in the link's dimensions whose visibility matches the service (`public` ↔ reachability `public`, `private` ↔ anything else) and that has a Kubernetes Service to route to. With several matches the pick is deterministic: active scopes first, then the oldest; the others are logged and the chosen slug is stored on the link. No match fails and asks for the slug. The form can't list the scopes: the platform doesn't pass them to the link context |
+| **Path** | Path on the service's domain. Supports exact (`/api/users`), parameterized (`/api/users/:id`) and wildcard (`/api/users/*`). Each path can appear once per link |
+| **Verbs** | Optional, `ALL` (any method) by default. Pick HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) to expose only those. `ALL` overrides any other verb selected on the same route |
+| **Scope** | Optional. Slug of the linking application's scope that receives the traffic. When empty, the agent picks (once for the whole link) the application's scope in the link's dimensions whose visibility matches the service (`public` ↔ reachability `public`, `private` ↔ anything else) and that has a Kubernetes Service to route to. With several matches the pick is deterministic: active scopes first, then the oldest; the others are logged and the chosen slug is stored on the link. No match fails and asks for the slug. The form can't list the scopes: the platform doesn't pass them to the link context |
 | **Authorized Groups** | Groups allowed to call the path. Required with `aws-cognito`: create and update fail without them. Optional and ignored with `AUTH_TYPE=none` |
 
-Each link gets its own `HTTPRoute` (hostname = the service's domain) and `AuthorizationPolicies`, labeled `nullplatform.com/link-id`; unlink deletes exactly those. A path + method can be exposed by a single link per domain: a link that would overlap another one fails instead of being silently shadowed (Gateway API gives the oldest route the traffic). Updating a link replaces its route and prunes the policies it no longer needs.
+Each link gets its own `HTTPRoute` (hostname = the service's domain, one rule per route) and `AuthorizationPolicies`, labeled `nullplatform.com/link-id`; unlink deletes exactly those. A path + method can be exposed by a single link per domain: a link with a route that would overlap another link fails instead of being silently shadowed (Gateway API gives the oldest route the traffic).
+
+Updating a link replaces its `HTTPRoute` in place and prunes the policies it no longer needs, so removing one route takes down only that path: the others keep serving. To retire a scope, remove the routes that target it first, then delete the scope. Links created before the routes list (a single top-level `path`) keep working and are stored as a one-route list on their next update.
 
 Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below). The domain + links model supports `AUTH_TYPE=aws-cognito` and `none` (`aws-avp` is not supported yet).
 
