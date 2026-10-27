@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.5](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.0.4...v1.0.5) (2026-10-27)
+
+
+### Bug Fixes
+
+* delete HTTPRoutes before policies; count root-namespace policies ([5fbb970](https://github.com/nullplatform/services-endpoint-exposer/commit/5fbb970005357fe3b327fa7903ae1509512fd512))
+* deploy sync lists services with the flags the agent's np supports ([6dbc6b2](https://github.com/nullplatform/services-endpoint-exposer/commit/6dbc6b26a3efa9c8f1e0a833171ebd85f9fe0386))
+* deploy sync updates the right exposers and backends ([16b2560](https://github.com/nullplatform/services-endpoint-exposer/commit/16b25607d2417087fadd651a25424824b63444c6))
+* don't block the rest of the gateway; delete removes HTTPRoutes ([0fe42ed](https://github.com/nullplatform/services-endpoint-exposer/commit/0fe42ed0c5f7c54c227866701f83b10af1a6f008))
+* endpoint exposer stops blocking other apps on the gateway ([#37](https://github.com/nullplatform/services-endpoint-exposer/issues/37) on main) ([679f26b](https://github.com/nullplatform/services-endpoint-exposer/commit/679f26b33c05601944f9b7bb20eea34fcfe04daf))
+* keep the gateway baseline with AUTH_TYPE=none ([9dc1f14](https://github.com/nullplatform/services-endpoint-exposer/commit/9dc1f1447ae708d7d14e48f1af7cf21546472272))
+* update AUTH_TYPE=none policies in place ([cb537f0](https://github.com/nullplatform/services-endpoint-exposer/commit/cb537f04bf77ba01cf07439156cad884ea2b61ed))
+* update policies in place instead of deleting them first ([98b0f86](https://github.com/nullplatform/services-endpoint-exposer/commit/98b0f865823c0ce6585606ea9344ffb2c8a40797))
+
 ## [1.0.4](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.0.3...v1.0.4) (2026-10-26)
 
 
