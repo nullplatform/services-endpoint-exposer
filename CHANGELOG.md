@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.0.5...v1.1.0) (2026-10-27)
+
+
+### Features
+
+* expose application routes through links on a service-owned domain ([a4bad73](https://github.com/nullplatform/services-endpoint-exposer/commit/a4bad734e19c56685ca0b0299a0cdf6d24e84b0e))
+
 ## [1.0.5](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.0.4...v1.0.5) (2026-10-27)
 
 
