@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# Prune Link Policies: AuthorizationPolicy names derive from (domain, method, path),
+# so updating a link's path or methods leaves the previous ones behind. After the
+# apply, delete the link's policies that this run did not generate.
+#
+# Pruning after (not before) the apply keeps the path authorized during the update.
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+APPLIED_DIR="$OUTPUT_DIR/apply"
+
+GENERATED=""
+if compgen -G "$APPLIED_DIR/authorizationpolicy-*.yaml" > /dev/null; then
+  GENERATED=$(yq -N '.metadata.name' "$APPLIED_DIR"/authorizationpolicy-*.yaml | sort -u)
+fi
+
+EXISTING=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" \
+  -l "nullplatform.com/link-id=$LINK_ID" \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+
+while IFS= read -r POLICY_NAME; do
+  [[ -z "$POLICY_NAME" ]] && continue
+  if ! grep -qxF "$POLICY_NAME" <<< "$GENERATED"; then
+    # sync_gateway_baseline only stops excluding hosts that a run removed.
+    kubectl get authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE" -o json \
+      | jq -r '.spec.rules[]?.to[]?.operation.hosts[]?' >> "$OUTPUT_DIR/.authz-removed-hosts" || true
+    kubectl delete authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE" --ignore-not-found
+    echo "🧹 Deleted stale AuthorizationPolicy: $POLICY_NAME"
+  fi
+done <<< "$EXISTING"
+
+echo "Link $LINK_ID policies pruned"

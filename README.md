@@ -4,13 +4,13 @@ A nullplatform service that manages dynamic exposure of application endpoints th
 
 ## What it does
 
-Developers declare which HTTP routes they want to expose, which nullplatform scope backs each route, and which user groups are allowed to call it. The service handles the rest:
+Developers create a service for a domain, then link each application to it declaring which paths it exposes, which nullplatform scope backs each one, and which user groups are allowed to call them. The service handles the rest:
 
 - Creates **HTTPRoutes** (Kubernetes Gateway API v1) pointing to the right backend service
 - Creates **AuthorizationPolicies** enforcing group-based access control
 - Creates **RequestAuthentication** resources validating JWT tokens (Cognito) or delegating to AVP
 
-Route visibility is resolved automatically from the scope's own `visibility` attribute (`external` → public gateway, `internal` → private gateway).
+The gateway (public or private) is chosen on the service with its `visibility`.
 
 ### Supported auth schemes
 
@@ -30,16 +30,46 @@ In this mode `Authorized Groups` is ignored and can be left empty, and no `COGNI
 
 ## Route configuration (developer UI)
 
-When creating or updating the service, developers configure one or more routes:
+Exposing endpoints takes two steps: a **service** owns a domain, and each **link** exposes the paths of the linking application on that domain.
+
+### 1. Create the service — the domain
 
 | Field | Description |
 |---|---|
-| **Verbs** | HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`), or `ALL` to match any method. `ALL` overrides any other verb selected on the same route |
-| **Path** | Route path. Supports exact (`/api/users`), parameterized (`/api/users/{id}`), and wildcard (`/api/users/*`) |
-| **Scope** | nullplatform scope slug that backs this route |
-| **Authorized Groups** | Comma-separated list of groups allowed to call this route (e.g. `admin, read-only`). Required with `aws-cognito`/`aws-avp`: create and update fail if a route has none. Ignored with `none` |
+| **Domain name** | Hostname the paths are exposed on, e.g. `api.example.com`. No wildcards. Fixed after creation. |
+| **Visibility** | `public` attaches the domain to the public gateway, `private` to the private one. Fixed after creation. |
 
-Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below).
+On create the service validates that the selected gateway has a listener for the domain and that no other service already serves links on it, checks the domain in DNS (see below), and ensures the Cognito `RequestAuthentication`. It creates no route by itself. It can only be deleted once every link is unlinked.
+
+#### Domain DNS check
+
+The domain must exist in DNS wherever it is hosted (Route 53, GoDaddy, Cloudflare, an internal DNS server…):
+
+- **public** services are checked against public resolvers (`PUBLIC_DNS_RESOLVERS`, default `1.1.1.1 8.8.8.8`), so the check sees what internet clients see and not a split-horizon private view of the same zone. If none replies, the agent's resolver is used.
+- **private** services are checked with the agent's own resolver: the agent runs inside the client's network, so it sees the internal DNS.
+
+A domain that doesn't resolve fails the create, telling apart a domain that isn't registered (only the TLD answers) from a zone that lacks the record. A domain that resolves but not to the gateway's address only warns: a CDN or proxy may forward to it, but usually requests would never reach the routes. `DOMAIN_DNS_CHECK=warn` reports without failing, `off` skips the check.
+
+### 2. Link an application — its routes
+
+nullplatform allows a single link per application and dimensions, so the link carries a **list of routes**, one item per path the application exposes on the domain:
+
+| Route field | Description |
+|---|---|
+| **Path** | Path on the service's domain. Supports exact (`/api/users`), parameterized (`/api/users/:id`) and wildcard (`/api/users/*`). Each path can appear once per link |
+| **Verbs** | Optional, `ALL` (any method) by default. Pick HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) to expose only those. `ALL` overrides any other verb selected on the same route |
+| **Scope** | Optional. Slug of the linking application's scope that receives the traffic. When empty, the agent picks (once for the whole link) the application's scope in the link's dimensions whose visibility matches the service (`public` ↔ reachability `public`, `private` ↔ anything else) and that has a Kubernetes Service to route to. With several matches the pick is deterministic: active scopes first, then the oldest; the others are logged and the chosen slug is stored on the link. No match fails and asks for the slug. The form can't list the scopes: the platform doesn't pass them to the link context |
+| **Authorized Groups** | Groups allowed to call the path. Required with `aws-cognito`: create and update fail without them. Optional and ignored with `AUTH_TYPE=none` |
+
+Each link gets its own `HTTPRoute` (hostname = the service's domain, one rule per route) and `AuthorizationPolicies`, labeled `nullplatform.com/link-id`; unlink deletes exactly those. A path + method can be exposed by a single link per domain: a link with a route that would overlap another link fails instead of being silently shadowed (Gateway API gives the oldest route the traffic).
+
+Updating a link replaces its `HTTPRoute` in place and prunes the policies it no longer needs, so removing one route takes down only that path: the others keep serving. To retire a scope, remove the routes that target it first, then delete the scope. Links created before the routes list (a single top-level `path`) keep working and are stored as a one-route list on their next update.
+
+Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below). The domain + links model supports `AUTH_TYPE=aws-cognito` and `none` (`aws-avp` is not supported yet).
+
+### Services created before the domain + links model
+
+Services that declare their routes inline (`routes` attribute, no `domain_name`) keep working: `entrypoint/service` runs them with `workflows/istio/legacy/`, and `sync_exposer` keeps their routes in sync on deploys. Their routes are no longer editable from the UI; migrate them by creating a domain service per `(domain, visibility)` they serve and one link per route, then deleting the legacy service. While both exist, the legacy `HTTPRoute` keeps the traffic (it is older), so deleting it switches traffic to the links without a gap.
 
 ---
 
@@ -99,6 +129,8 @@ Auth configuration is resolved at **runtime from the agent's environment**, not 
 | Variable | Default | Description |
 |---|---|---|
 | `AUTH_TYPE` | `none` | Authorization scheme for the entire installation: `aws-cognito`, `aws-avp` or `none`. Unset means no authentication for services that never had it (see below) |
+| `DOMAIN_DNS_CHECK` | `enforce` | Domain DNS check on service create/update: `enforce` fails when the domain doesn't resolve, `warn` only reports, `off` skips it |
+| `PUBLIC_DNS_RESOLVERS` | `1.1.1.1 8.8.8.8` | Space-separated resolvers used to check public domains; the first that replies is used |
 
 Leaving `AUTH_TYPE` unset never removes auth from an existing service. Each create/update stores the scheme in the service's `auth_type` attribute, and when the variable is missing, create/update **fail** for any service stored with auth (or, for services created before `auth_type` existed, whose stored routes have authorized groups). Set `AUTH_TYPE=none` explicitly to drop auth on purpose. Deletes always proceed.
 
@@ -170,7 +202,7 @@ module "agent" {
 
 ### 3. Register the `container-scope-override` on the target scope
 
-The `container-scope-override/` directory injects a `sync_exposer` step into scope deploy workflows (initial, blue_green, switch_traffic, finalize, rollback, delete). This keeps HTTPRoutes in sync when the underlying Kubernetes service names change during a blue/green deploy.
+The `container-scope-override/` directory injects a `sync_exposer` step into scope deploy workflows (initial, blue_green, switch_traffic, finalize, rollback, delete). This keeps HTTPRoutes in sync when the underlying Kubernetes service names change during a blue/green deploy: it re-runs the update action of every active link of the application whose scope is the one being deployed (and the update of legacy services).
 
 This mechanism only activates when the scope agent entrypoint receives `--overrides-path=` pointing to the override directory. That flag must be set on the notification channel that fires for the **target scope** — i.e. the scope specification used by apps that expose routes through this service — not on the service channel from step 1 above.
 
@@ -228,7 +260,8 @@ This means a single agent deployment can serve multiple environments, each with 
 │   ├── install/             # Reference OpenTofu implementation of the nullplatform registration (see "Installation with tofu modules" — illustrative, not meant to be sourced directly)
 │   └── requirements/aws/    # Reference OpenTofu implementation of the AVP IAM role (aws-avp only — same caveat as install/)
 ├── templates/istio/         # Kubernetes resource templates (httproute, authorizationpolicy, request-authentication)
-├── workflows/istio/         # create.yaml, update.yaml, delete.yaml, read.yaml
+├── workflows/istio/         # service: create/update/delete/read · link: link (create/update), unlink
+│   └── legacy/              # services with inline routes (pre domain + links model)
 ├── test/                    # BATS test suite
 └── container-scope-override/ # Deployment templates for override scope agent
 ```

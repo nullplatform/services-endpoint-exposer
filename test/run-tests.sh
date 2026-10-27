@@ -52,6 +52,7 @@ TEST_FILES=(
   "test_sync_exposer.bats"
   "test_replace_allow_policies.bats"
   "test_integration.bats"
+  "test_link_model.bats"
 )
 
 FAILED=0

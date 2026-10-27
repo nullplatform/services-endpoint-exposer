@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# Build Link Policies: ALLOW AuthorizationPolicies for the link's route, on the
+# service's domain and labeled with the link id.
+#
+# The RequestAuthentication is ensured here too, not only on service create: it is
+# shared by every service of the environment and the last legacy service to be
+# deleted removes it.
+
+set -euo pipefail
+
+# AUTH_TYPE=none validates no JWT. build_request_authentication exits when there is
+# no user pool, which would also skip the allow policies sourced after it.
+if [[ "$AUTH_TYPE" != "none" ]]; then
+  source "$SERVICE_PATH/scripts/istio/build_request_authentication"
+fi
+source "$SERVICE_PATH/scripts/istio/build_allow_policies"

@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# Resolve Auth: maps AUTH_TYPE + the environment dimension to the per-environment
+# Cognito user pool / AVP policy store configured on the agent.
+#
+# Sourced by build_context (legacy routes-on-service model), build_service_context
+# and build_link_context.
+#
+# Required:
+#   CONTEXT        - the notification (service and/or link attributes)
+#   ENV_DIMENSION  - value of the "environment" dimension, e.g. "dev"
+# Optional:
+#   AUTH_TYPE      - "aws-cognito", "aws-avp" or "none" (agent env); unset means none
+#   ROUTES_JSON    - routes about to be exposed; each needs groups unless AUTH_TYPE=none
+# Exports: AUTH_TYPE, COGNITO_USER_POOL_ARN, AVP_POLICY_STORE_ARN, AVP_POLICY_STORE_ID
+
+# Deletes (and reads) only remove or inspect resources, so they skip the checks below.
+# Explicit allowlist: any other operation builds policies and keeps the checks.
+AUTH_IS_DELETE=false
+AUTH_OPERATION="${SERVICE_OPERATION:-${LINK_OPERATION:-apply}}"
+if [[ "$(echo "$CONTEXT" | jq -r '.type // ""')" == "delete" ||
+      "$AUTH_OPERATION" == "delete" || "$AUTH_OPERATION" == "read" ]]; then
+  AUTH_IS_DELETE=true
+fi
+
+# Unset means no authentication, but only for services and links that never had it:
+# an agent that loses AUTH_TYPE must not silently reopen paths that were protected.
+# Whether they had auth comes from the auth_type stored by update_service_results,
+# update_domain_service_results and update_link_results or, for entities stored
+# before it, from groups on the stored routes (none mode never stores groups).
+# Setting AUTH_TYPE=none explicitly is a deliberate switch and is allowed.
+if [[ -z "${AUTH_TYPE:-}" ]]; then
+  STORED_AUTH_TYPE=$(echo "$CONTEXT" | jq -r '
+    def has_groups: . // "" | if type == "array" then length > 0 else gsub("[ ,]"; "") != "" end;
+    [.service.attributes // {}, .link.attributes // {}] as $all
+    | ([$all[] | .auth_type // "" | select(. != "")] | first) as $stored
+    | if $stored then $stored
+      elif [$all[] | (.routes[]? | .groups), .groups | has_groups] | any
+        then "unknown (its routes have authorized groups)"
+      else "none" end')
+  if [[ "$STORED_AUTH_TYPE" != "none" && "$AUTH_IS_DELETE" != "true" ]]; then
+    echo "ERROR: AUTH_TYPE is not set, which defaults to none, but this service was configured with auth: $STORED_AUTH_TYPE." >&2
+    echo "Refusing to expose its routes without authentication. Set AUTH_TYPE on the agent, or AUTH_TYPE=none to drop auth on purpose." >&2
+    exit 1
+  fi
+  AUTH_TYPE="none"
+fi
+
+ENV_SUFFIX=$(echo "${ENV_DIMENSION:-}" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+
+if [[ "$AUTH_TYPE" != "none" ]]; then
+  : "${ENV_SUFFIX:?service.dimensions.environment is required}"
+
+  # groups is optional in the specs so AUTH_TYPE=none installations can leave it
+  # empty. With auth enabled a route without groups would get an unconditional
+  # ALLOW policy, i.e. be exposed without any check, so refuse it instead.
+  if [[ "$AUTH_IS_DELETE" != "true" ]]; then
+    ROUTES_WITHOUT_GROUPS=$(echo "${ROUTES_JSON:-[]}" | jq -r '
+      .[]
+      | select(.groups // "" | if type == "array" then length == 0 else gsub("[ ,]"; "") == "" end)
+      | "  - \((.methods // [.method // "GET"]) | join(",")) \(.path)"')
+    if [[ -n "$ROUTES_WITHOUT_GROUPS" ]]; then
+      echo "ERROR: AUTH_TYPE=$AUTH_TYPE requires at least one authorized group per route. Routes without groups:" >&2
+      echo "$ROUTES_WITHOUT_GROUPS" >&2
+      exit 1
+    fi
+  fi
+fi
+
+case "$AUTH_TYPE" in
+  none)
+    COGNITO_USER_POOL_ARN=""
+    AVP_POLICY_STORE_ARN=""
+    ;;
+  aws-avp)
+    : "${OPA_PROVIDER_NAME:?OPA_PROVIDER_NAME is required when AUTH_TYPE=aws-avp}"
+    AVP_VAR="AVP_POLICY_STORE_ARN_${ENV_SUFFIX}"
+    : "${!AVP_VAR:?${AVP_VAR} is required when AUTH_TYPE=aws-avp}"
+    AVP_POLICY_STORE_ARN="${!AVP_VAR}"
+    COGNITO_USER_POOL_ARN=""
+    ;;
+  aws-cognito)
+    COGNITO_VAR="COGNITO_USER_POOL_ARN_${ENV_SUFFIX}"
+    : "${!COGNITO_VAR:?${COGNITO_VAR} is required when AUTH_TYPE=aws-cognito}"
+    COGNITO_USER_POOL_ARN="${!COGNITO_VAR}"
+    AVP_POLICY_STORE_ARN=""
+    ;;
+  *)
+    echo "ERROR: AUTH_TYPE must be 'aws-avp', 'aws-cognito' or 'none', got: '$AUTH_TYPE'" >&2
+    exit 1
+    ;;
+esac
+AVP_POLICY_STORE_ID=$(echo "$AVP_POLICY_STORE_ARN" | cut -d'/' -f2)
+
+export AUTH_TYPE
+export COGNITO_USER_POOL_ARN
+export AVP_POLICY_STORE_ARN
+export AVP_POLICY_STORE_ID

@@ -16,55 +16,41 @@
                 "type": "VerticalLayout",
                 "elements": [
                     {
-                        "type": "Group",
-                        "label": "Routes *",
+                        "type": "HorizontalLayout",
                         "elements": [
                             {
                                 "type": "Control",
-                                "scope": "#/properties/routes",
-                                "options": {
-                                    "elementLabelProp": "summary",
-                                    "detail": {
-                                        "type": "VerticalLayout",
-                                        "elements": [
-                                            {
-                                                "type": "Control",
-                                                "label": "Verbs",
-                                                "scope": "#/properties/methods"
-                                            },
-                                            {
-                                                "type": "HorizontalLayout",
-                                                "elements": [
-                                                    {
-                                                        "type": "Control",
-                                                        "label": "Path",
-                                                        "scope": "#/properties/path"
-                                                    },
-                                                    {
-                                                        "type": "Control",
-                                                        "label": "Scope",
-                                                        "scope": "#/properties/scope"
-                                                    }
-                                                ]
-                                            },
-                                            {
-                                                "type": "Control",
-                                                "label": "Authorized Groups",
-                                                "scope": "#/properties/groups"
-                                            }
-                                        ]
-                                    },
-                                    "showSortButtons": true
-                                }
+                                "label": "Domain name *",
+                                "scope": "#/properties/domain_name"
+                            },
+                            {
+                                "type": "Control",
+                                "label": "Visibility",
+                                "scope": "#/properties/visibility"
                             }
                         ]
                     }
                 ]
             },
             "properties": {
+                "domain_name": {
+                    "type": "string",
+                    "title": "Domain name",
+                    "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$",
+                    "maxLength": 253,
+                    "description": "Domain the paths of this service are exposed on, e.g. api.example.com. Each linked application adds its own path. It must be served by the gateway of the selected visibility.",
+                    "editableOn": ["create"]
+                },
+                "visibility": {
+                    "type": "string",
+                    "title": "Visibility",
+                    "enum": ["public", "private"],
+                    "default": "public",
+                    "description": "public exposes the domain on the public gateway, private on the private one.",
+                    "editableOn": ["create"]
+                },
                 "routes": {
                     "type": "array",
-                    "minItems": 1,
                     "items": {
                         "type": "object",
                         "required": [

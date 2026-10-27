@@ -1,0 +1,80 @@
+#!/bin/bash
+
+# Build Service Context (domain model): the service is the entry point of a domain.
+# It carries only `domain_name` and `visibility`; every path exposed on that domain
+# comes from a link (see build_link_context).
+#
+# SERVICE_OPERATION (workflow configuration):
+#   apply  - create/update: validates domain_name and visibility (default)
+#   delete - tolerates missing/invalid attributes so a half-created service can be deleted
+#   read   - same as delete
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+# The notification payload lives in $NP_ACTION_CONTEXT (see build_context for why
+# $CONTEXT can't be used under --build-context).
+CONTEXT=$(echo "${NP_ACTION_CONTEXT:-$CONTEXT}" | sed "s/^'//;s/'$//" | jq -c '.notification // .')
+
+SERVICE_OPERATION="${SERVICE_OPERATION:-apply}"
+
+SERVICE_ID=$(echo "$CONTEXT" | jq -r .service.id)
+SERVICE_SLUG=$(echo "$CONTEXT" | jq -r .service.slug)
+ACTION_ID=$(echo "$CONTEXT" | jq -r .id)
+ACTION_NAME=$(echo "$CONTEXT" | jq -r .slug)
+
+K8S_NAMESPACE="${NAMESPACE_OVERRIDE:-${K8S_NAMESPACE:-nullplatform}}"
+
+# Parameters of the running action win over the stored attributes (create/update).
+SERVICE_ATTRIBUTES=$(echo "$CONTEXT" | jq -c '(.service.attributes // {}) * (.parameters // {})')
+DOMAIN_NAME=$(echo "$SERVICE_ATTRIBUTES" | jq -r '.domain_name // ""' | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+VISIBILITY=$(echo "$SERVICE_ATTRIBUTES" | jq -r '.visibility // "public"')
+
+DOMAIN_REGEX='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+
+if [[ "$SERVICE_OPERATION" == "apply" ]]; then
+  if [[ -z "$DOMAIN_NAME" ]]; then
+    echo "ERROR: domain_name is required" >&2
+    exit 1
+  fi
+  if [[ ${#DOMAIN_NAME} -gt 253 || ! "$DOMAIN_NAME" =~ $DOMAIN_REGEX ]]; then
+    echo "ERROR: domain_name '$DOMAIN_NAME' is not a valid hostname (e.g. api.example.com, no wildcards)" >&2
+    exit 1
+  fi
+  if [[ "$VISIBILITY" != "public" && "$VISIBILITY" != "private" ]]; then
+    echo "ERROR: visibility must be 'public' or 'private', got: '$VISIBILITY'" >&2
+    exit 1
+  fi
+fi
+
+if [[ "$VISIBILITY" == "private" ]]; then
+  GATEWAY_NAME="$PRIVATE_GATEWAY_NAME"
+else
+  GATEWAY_NAME="$PUBLIC_GATEWAY_NAME"
+fi
+
+# Only set OUTPUT_DIR if not already set (allows tests to override)
+if [[ -z "${OUTPUT_DIR:-}" ]]; then
+  export OUTPUT_DIR="$SERVICE_PATH/output/$SERVICE_SLUG-$SERVICE_ID/$ACTION_NAME-$ACTION_ID"
+fi
+mkdir -p "$OUTPUT_DIR"
+
+ENV_DIMENSION=$(echo "$CONTEXT" | jq -r '.service.dimensions.environment // ""')
+source "$SERVICE_PATH/scripts/istio/resolve_auth"
+
+if [[ "$SERVICE_OPERATION" == "apply" && "$AUTH_TYPE" == "aws-avp" ]]; then
+  echo "ERROR: AUTH_TYPE=aws-avp is not supported by the domain + links model yet; use aws-cognito" >&2
+  exit 1
+fi
+
+echo "Service $SERVICE_SLUG ($SERVICE_ID): domain=$DOMAIN_NAME visibility=$VISIBILITY gateway=$GATEWAY_NAMESPACE/$GATEWAY_NAME"
+
+export SERVICE_ID
+export SERVICE_SLUG
+export ACTION_ID
+export ACTION_NAME
+export K8S_NAMESPACE
+export DOMAIN_NAME
+export VISIBILITY
+export GATEWAY_NAME

@@ -18,6 +18,7 @@ setup() {
   export NP_SERVICES='[{"id":"svc-1","name":"one","specification_id":"spec-1","status":"active","attributes":{"routes":[{"scope":"prod"}]}}]'
   export NP_ACTION_STATUS="success"
   export NP_EXISTING_ACTIONS='[]'
+  export NP_LINKS='[]'
   export NP_CALLS="$TEST_TEMP_DIR/np-calls"
 
   # Mock np: answers each subcommand from the NP_* variables and logs every call.
@@ -41,6 +42,16 @@ case "$*" in
   "service action create"*)
     echo '{"id":"action-new"}' ;;
   "service action read"*)
+    echo "{\"status\":\"$NP_ACTION_STATUS\"}" ;;
+  "link specification action specification list"*)
+    echo '{"results":[{"id":"link-action-spec-1","slug":"update-connect","type":"update"}]}' ;;
+  "link list"*)
+    echo "{\"results\":$NP_LINKS}" ;;
+  "link action list"*)
+    echo '{"results":[]}' ;;
+  "link action create"*)
+    echo '{"id":"link-action-new"}' ;;
+  "link action read"*)
     echo "{\"status\":\"$NP_ACTION_STATUS\"}" ;;
 esac
 EOF
@@ -143,4 +154,56 @@ teardown() {
   assert_failure
   assert_output --partial "could not list the services"
   ! grep -q "service action create" "$NP_CALLS"
+}
+
+# --- domain + links model ---
+
+domain_model() {
+  export NP_SERVICES='[{"id":"svc-d","name":"api","specification_id":"spec-1","status":"active","attributes":{"domain_name":"api.acme.com","visibility":"public"}}]'
+}
+
+@test "sync_exposer: updates the links with a route on the deployed scope, with the declared routes only" {
+  domain_model
+  export NP_LINKS='[
+    {"id":"link-1","name":"one","service_id":"svc-d","specification_id":"ls-1","status":"active",
+     "attributes":{"routes":[{"path":"/a","methods":["ALL"],"scope":"other","summary":"x"},{"path":"/b","methods":["GET"],"scope":"prod","summary":"y"}],"endpoints":["api.acme.com/a"],"summary":"ALL /a","auth_type":"none"}},
+    {"id":"link-2","name":"two","service_id":"svc-d","specification_id":"ls-1","status":"active","attributes":{"routes":[{"path":"/c","scope":"other"}]}},
+    {"id":"link-3","name":"three","service_id":"svc-other","specification_id":"ls-1","status":"active","attributes":{"routes":[{"path":"/d","scope":"prod"}]}}
+  ]'
+
+  run bash "$SCRIPT"
+
+  assert_success
+  [[ "$(grep -c "link action create --linkId link-1" "$NP_CALLS")" -eq 1 ]]
+  ! grep -q "link action create --linkId link-2" "$NP_CALLS"
+  ! grep -q "link action create --linkId link-3" "$NP_CALLS"
+  # The domain service itself has no routes to update.
+  ! grep -q "service action create" "$NP_CALLS"
+  body=$(grep "link action create --linkId link-1" "$NP_CALLS" | sed 's/.*--body //; s/ --format json$//')
+  [[ "$(jq -c '.parameters' <<< "$body")" == '{"routes":[{"path":"/a","methods":["ALL"],"scope":"other"},{"path":"/b","methods":["GET"],"scope":"prod"}]}' ]]
+  [[ "$(jq -r '.specification_id' <<< "$body")" == "link-action-spec-1" ]]
+  # The flag the np CLI takes (not --link-specification-id).
+  grep -q "link specification action specification list --linkSpecificationId ls-1" "$NP_CALLS"
+}
+
+@test "sync_exposer: a failed link update fails the deploy step" {
+  domain_model
+  export NP_ACTION_STATUS="failed"
+  export NP_LINKS='[{"id":"link-1","name":"one","service_id":"svc-d","specification_id":"ls-1","status":"active","attributes":{"routes":[{"path":"/a","scope":"prod"}]}}]'
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "Could not update endpoint exposer(s): link one [link-1]"
+}
+
+@test "sync_exposer: nothing to do when neither services nor links route to the scope" {
+  domain_model
+  export NP_LINKS='[{"id":"link-1","name":"one","service_id":"svc-d","specification_id":"ls-1","status":"active","attributes":{"routes":[{"path":"/a","scope":"other"}]}}]'
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "No endpoint exposer routes to this scope"
+  ! grep -q "action create" "$NP_CALLS"
 }

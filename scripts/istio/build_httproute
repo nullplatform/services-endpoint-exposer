@@ -67,6 +67,7 @@ else
   TEMPLATE="$SERVICE_PATH/templates/istio/httproute.yaml.tpl"
 
   HTTPROUTE_CONTEXT=$(jq -n \
+    --arg name "$SERVICE_SLUG-$SERVICE_ID-$SUFFIX" \
     --arg service_slug "$SERVICE_SLUG" \
     --arg service_id "$SERVICE_ID" \
     --arg k8s_namespace "$K8S_NAMESPACE" \
@@ -75,6 +76,7 @@ else
     --arg gateway_namespace "$GATEWAY_NAMESPACE" \
     --arg suffix "$SUFFIX" \
     '{
+      name: $name,
       service_slug: $service_slug,
       service_id: $service_id,
       k8s_namespace: $k8s_namespace,

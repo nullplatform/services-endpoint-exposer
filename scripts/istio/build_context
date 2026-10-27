@@ -54,75 +54,8 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 
-# Unset means no authentication, but only for services that never had it: an
-# agent that loses AUTH_TYPE must not silently reopen routes that were
-# protected. Whether a service had auth comes from the auth_type stored by
-# update_service_results or, for services stored before it, from groups on the
-# stored routes (none mode never stores groups). Setting AUTH_TYPE=none
-# explicitly is a deliberate switch and is allowed. Deletes are exempt: they
-# only remove policies.
-if [[ -z "${AUTH_TYPE:-}" ]]; then
-  STORED_AUTH_TYPE=$(echo "$CONTEXT" | jq -r '
-    .service.attributes as $attrs
-    | if ($attrs.auth_type // "") != "" then $attrs.auth_type
-      elif [$attrs.routes[]? | .groups // "" | if type == "array" then length > 0 else gsub("[ ,]"; "") != "" end] | any
-        then "unknown (its routes have authorized groups)"
-      else "none" end')
-  if [[ "$STORED_AUTH_TYPE" != "none" && "$(echo "$CONTEXT" | jq -r '.type // ""')" != "delete" ]]; then
-    echo "ERROR: AUTH_TYPE is not set, which defaults to none, but this service was configured with auth: $STORED_AUTH_TYPE." >&2
-    echo "Refusing to expose its routes without authentication. Set AUTH_TYPE on the agent, or AUTH_TYPE=none to drop auth on purpose." >&2
-    exit 1
-  fi
-  AUTH_TYPE="none"
-fi
-
 ENV_DIMENSION=$(echo "$CONTEXT" | jq -r '.service.dimensions.environment // ""')
-ENV_SUFFIX=$(echo "$ENV_DIMENSION" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
-
-if [[ "$AUTH_TYPE" != "none" ]]; then
-  : "${ENV_SUFFIX:?service.dimensions.environment is required}"
-
-  # groups is optional in the spec so AUTH_TYPE=none installations can leave it
-  # empty. With auth enabled a route without groups would get an unconditional
-  # ALLOW policy, i.e. be exposed without any check, so refuse it instead.
-  # Deletes are exempt so a service can always be removed.
-  if [[ "$(echo "$CONTEXT" | jq -r '.type // ""')" != "delete" ]]; then
-    ROUTES_WITHOUT_GROUPS=$(echo "$ROUTES_JSON" | jq -r '
-      .[]
-      | select(.groups // "" | if type == "array" then length == 0 else gsub("[ ,]"; "") == "" end)
-      | "  - \((.methods // [.method // "GET"]) | join(",")) \(.path)"')
-    if [[ -n "$ROUTES_WITHOUT_GROUPS" ]]; then
-      echo "ERROR: AUTH_TYPE=$AUTH_TYPE requires at least one authorized group per route. Routes without groups:" >&2
-      echo "$ROUTES_WITHOUT_GROUPS" >&2
-      exit 1
-    fi
-  fi
-fi
-
-case "$AUTH_TYPE" in
-  none)
-    COGNITO_USER_POOL_ARN=""
-    AVP_POLICY_STORE_ARN=""
-    ;;
-  aws-avp)
-    : "${OPA_PROVIDER_NAME:?OPA_PROVIDER_NAME is required when AUTH_TYPE=aws-avp}"
-    AVP_VAR="AVP_POLICY_STORE_ARN_${ENV_SUFFIX}"
-    : "${!AVP_VAR:?${AVP_VAR} is required when AUTH_TYPE=aws-avp}"
-    AVP_POLICY_STORE_ARN="${!AVP_VAR}"
-    COGNITO_USER_POOL_ARN=""
-    ;;
-  aws-cognito)
-    COGNITO_VAR="COGNITO_USER_POOL_ARN_${ENV_SUFFIX}"
-    : "${!COGNITO_VAR:?${COGNITO_VAR} is required when AUTH_TYPE=aws-cognito}"
-    COGNITO_USER_POOL_ARN="${!COGNITO_VAR}"
-    AVP_POLICY_STORE_ARN=""
-    ;;
-  *)
-    echo "ERROR: AUTH_TYPE must be 'aws-avp', 'aws-cognito' or 'none', got: '$AUTH_TYPE'" >&2
-    exit 1
-    ;;
-esac
-AVP_POLICY_STORE_ID=$(echo "$AVP_POLICY_STORE_ARN" | cut -d'/' -f2)
+source "$SERVICE_PATH/scripts/istio/resolve_auth"
 
 export SERVICE_ID
 export SERVICE_SLUG
@@ -132,6 +65,3 @@ export APPLICATION_ID
 export ROUTES_JSON
 export PUBLIC_ROUTES_JSON
 export PRIVATE_ROUTES_JSON
-export AUTH_TYPE
-export COGNITO_USER_POOL_ARN
-export AVP_POLICY_STORE_ID

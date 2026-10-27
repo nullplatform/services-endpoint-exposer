@@ -1,0 +1,53 @@
+{
+  "action": "link:action:create",
+  "id": "a1b2c3d4-0000-4000-8000-000000000001",
+  "name": "create-connect",
+  "slug": "create-connect",
+  "status": "pending",
+  "type": "create",
+  "parameters": {
+    "path": "/api/users/*",
+    "methods": ["GET", "POST"],
+    "groups": ["admin", "read-only"],
+    "scope": "users-prod"
+  },
+  "results": {},
+  "specification": {
+    "id": "link-action-spec-id",
+    "slug": "create-connect"
+  },
+  "service": {
+    "id": "svc-1234",
+    "slug": "acme-api",
+    "attributes": {
+      "domain_name": "api.acme.com",
+      "visibility": "public"
+    },
+    "type": "dependency",
+    "specification": {
+      "id": "service-spec-id",
+      "slug": "http-route-access-control"
+    },
+    "dimensions": {
+      "environment": "dev"
+    }
+  },
+  "link": {
+    "id": "link-5678",
+    "slug": "users-api",
+    "name": "users-api",
+    "entity_nrn": "organization=1:account=2:namespace=3:application=444",
+    "attributes": {},
+    "dimensions": {
+      "environment": "dev"
+    }
+  },
+  "tags": {
+    "organization_id": "1",
+    "account_id": "2",
+    "namespace_id": "3",
+    "application_id": "999",
+    "application": "service-owner-app"
+  },
+  "entity_nrn": "organization=1:account=2:namespace=3:application=999"
+}

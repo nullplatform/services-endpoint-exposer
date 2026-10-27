@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Check Active Links: refuses to delete a domain service while links still expose
+# paths on it. Deleting it would remove the RequestAuthentication those paths rely
+# on and leave their HTTPRoutes orphaned; unlinking first keeps every app's routes
+# under their own link's lifecycle.
+
+set -euo pipefail
+
+: "${SERVICE_ID:?SERVICE_ID is required}"
+
+# Links belong to the linking applications, anywhere in the organization. With an
+# API key (the agent) the list needs an NRN, or it is rejected with 403.
+ORGANIZATION_NRN=$(np service read --id "$SERVICE_ID" --format json |
+  jq -r '.entity_nrn // "" | capture("(?<org>organization=[0-9]+)").org // ""')
+: "${ORGANIZATION_NRN:?could not resolve the organization of service $SERVICE_ID}"
+
+LINKS=$(np link list --nrn "$ORGANIZATION_NRN" --show-descendants --service-id "$SERVICE_ID" \
+  --limit 200 --format json | jq -c '.results // []')
+
+ACTIVE_LINKS=$(echo "$LINKS" | jq -c '[
+  .[] | select(.status as $s | ["archived", "archiving", "failed", "cancelled"] | index($s) | not)
+]')
+NUM_ACTIVE=$(echo "$ACTIVE_LINKS" | jq 'length')
+
+if [[ "$NUM_ACTIVE" -gt 0 ]]; then
+  echo "ERROR: service $SERVICE_ID still has $NUM_ACTIVE link(s) exposing paths on its domain:" >&2
+  echo "$ACTIVE_LINKS" | jq -r '.[] | "  - link \(.id) [\(.status)] \(.attributes.summary // .attributes.path // "")"' >&2
+  echo "Unlink them before deleting the service." >&2
+  exit 1
+fi
+
+echo "No active links for service $SERVICE_ID"

@@ -1,13 +1,9 @@
 steps:
-  - name: "find k8s namespace"
+  - name: "build service context"
     type: script
-    file: "$SERVICE_PATH/scripts/istio/fetch_provider_data"
-    output:
-      - name: K8S_NAMESPACE
-        type: environment
-  - name: "build context"
-    type: script
-    file: "$SERVICE_PATH/scripts/istio/build_context"
+    file: "$SERVICE_PATH/scripts/istio/build_service_context"
+    configuration:
+      SERVICE_OPERATION: apply
     output:
       - name: SERVICE_ID
         type: environment
@@ -17,50 +13,27 @@ steps:
         type: environment
       - name: ACTION_NAME
         type: environment
-      - name: ROUTES_JSON
-        type: environment
-      - name: PUBLIC_ROUTES_JSON
-        type: environment
-      - name: PRIVATE_ROUTES_JSON
-        type: environment
       - name: K8S_NAMESPACE
         type: environment
-      - name: APPLICATION_ID
+      - name: DOMAIN_NAME
+        type: environment
+      - name: VISIBILITY
+        type: environment
+      - name: GATEWAY_NAME
         type: environment
       - name: AUTH_TYPE
         type: environment
       - name: COGNITO_USER_POOL_ARN
         type: environment
-      - name: AVP_POLICY_STORE_ID
-        type: environment
-  - name: "build public httproute"
+  - name: "validate domain"
     type: script
-    file: "$SERVICE_PATH/scripts/istio/build_httproute"
-    configuration:
-      VISIBILITY: "public"
-    output:
-      - name: HTTPROUTE_PUBLIC_FILE
-        type: file
-        file: "$OUTPUT_DIR/httproute-$SERVICE_ID-public.yaml"
-  - name: "build private httproute"
+    file: "$SERVICE_PATH/scripts/istio/validate_domain"
+  - name: "check domain dns"
     type: script
-    file: "$SERVICE_PATH/scripts/istio/build_httproute"
-    configuration:
-      VISIBILITY: "private"
-    output:
-      - name: HTTPROUTE_PRIVATE_FILE
-        type: file
-        file: "$OUTPUT_DIR/httproute-$SERVICE_ID-private.yaml"
-  - name: "manage policies"
+    file: "$SERVICE_PATH/scripts/istio/check_domain_dns"
+  - name: "build request authentication"
     type: script
-    file: "$SERVICE_PATH/scripts/common/manage_policies"
-    configuration:
-      ACTION: "apply"
-  - name: "sync gateway baseline"
-    type: script
-    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
-    configuration:
-      BASELINE_INCLUDE_RENDERED: "true"
+    file: "$SERVICE_PATH/scripts/istio/build_request_authentication"
   - name: apply
     type: script
     file: "$SERVICE_PATH/scripts/common/apply"
@@ -69,4 +42,4 @@ steps:
       DRY_RUN: false
   - name: "store service results"
     type: script
-    file: "$SERVICE_PATH/scripts/np/update_service_results"
+    file: "$SERVICE_PATH/scripts/np/update_domain_service_results"

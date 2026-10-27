@@ -1,29 +1,13 @@
 steps:
-  - name: "find k8s namespace"
+  - name: "build service context"
     type: script
-    file: "$SERVICE_PATH/scripts/istio/fetch_provider_data"
-    output:
-      - name: K8S_NAMESPACE
-        type: environment
-  - name: "build context"
-    type: script
-    file: "$SERVICE_PATH/scripts/istio/build_context"
+    file: "$SERVICE_PATH/scripts/istio/build_service_context"
+    configuration:
+      SERVICE_OPERATION: read
     output:
       - name: SERVICE_ID
         type: environment
-      - name: SERVICE_SLUG
-        type: environment
-      - name: ACTION_ID
-        type: environment
-      - name: ACTION_NAME
-        type: environment
-      - name: LINK_ID
-        type: environment
-      - name: LINK_NAME
-        type: environment
-      - name: SCOPE_ID
-        type: environment
-      - name: RULE_PATH
+      - name: K8S_NAMESPACE
         type: environment
   - name: read
     type: script

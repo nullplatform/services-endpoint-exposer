@@ -8,7 +8,9 @@ echo "=== Building Cognito RequestAuthentication ==="
 
 if [[ -z "${COGNITO_USER_POOL_ARN:-}" || "$COGNITO_USER_POOL_ARN" == "null" || "$COGNITO_USER_POOL_ARN" == "" ]]; then
   echo "No COGNITO_USER_POOL_ARN set, skipping RequestAuthentication generation"
-  return 0  # sourced by manage_policies
+  # return when sourced (manage_policies, build_link_policies) so the caller goes on;
+  # a plain exit there, or under the workflow runner, ends every later step too.
+  return 0 2>/dev/null || exit 0
 fi
 
 # Derive issuer and jwks_uri from ARN

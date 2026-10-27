@@ -6,6 +6,9 @@ metadata:
   labels:
     nullplatform.com/managed-by: http-route-access-control
     nullplatform.com/service-id: "{{ .service_id }}"
+{{- if .link_id }}
+    nullplatform.com/link-id: "{{ .link_id }}"
+{{- end }}
 spec:
   selector:
     matchLabels:

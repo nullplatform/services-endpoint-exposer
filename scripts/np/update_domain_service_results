@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# Store the normalized domain attributes of a domain-model service so links (and the
+# UI) read exactly what the gateway was validated against.
+
+set -euo pipefail
+
+CONTEXT="${CONTEXT:-${NP_ACTION_CONTEXT:-}}"
+: "${AUTH_TYPE:?AUTH_TYPE is required (resolved by build_service_context)}"
+
+ATTRIBUTES=$(jq -n \
+  --arg domain_name "$DOMAIN_NAME" \
+  --arg visibility "$VISIBILITY" \
+  --arg auth_type "$AUTH_TYPE" \
+  '{domain_name: $domain_name, visibility: $visibility, auth_type: $auth_type}')
+
+RESULTS=$(echo "$CONTEXT" | jq --argjson attributes "$ATTRIBUTES" \
+  '(.notification.parameters // .parameters // {}) + $attributes')
+
+echo "Storing service results: domain_name=$DOMAIN_NAME visibility=$VISIBILITY"
+np service action update --results "$RESULTS"
+
+np service patch --id "$SERVICE_ID" --body "{\"attributes\": $ATTRIBUTES}"
+
+echo "✅ Service results stored"

@@ -1,0 +1,113 @@
+#!/bin/bash
+
+# Check Domain DNS: the domain must exist in DNS, wherever it is hosted (Route 53,
+# GoDaddy, Cloudflare, an internal DNS server...), and should point at the gateway.
+#
+# Which DNS answers depends on the visibility:
+#   public  - public resolvers (PUBLIC_DNS_RESOLVERS, default 1.1.1.1 8.8.8.8), so the
+#             check sees what internet clients see, not a split-horizon private view
+#             of the same zone. Falls back to the system resolver if none replies.
+#   private - the agent's own resolver: the agent runs inside the client's network,
+#             so it sees the client's internal DNS.
+#
+# A domain that doesn't resolve fails (DOMAIN_DNS_CHECK=enforce, default), telling
+# apart a domain that isn't registered from a zone that lacks the record. A domain
+# that resolves somewhere other than the gateway only warns: a CDN or proxy may sit
+# in front, but usually it means the requests will never reach the gateway.
+#
+# DOMAIN_DNS_CHECK: enforce (default) | warn (report, never fail) | off (skip)
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+: "${DOMAIN_NAME:?DOMAIN_NAME is required}"
+: "${GATEWAY_NAME:?GATEWAY_NAME is required}"
+
+DOMAIN_DNS_CHECK="${DOMAIN_DNS_CHECK:-enforce}"
+VISIBILITY="${VISIBILITY:-public}"
+
+if [[ "$DOMAIN_DNS_CHECK" == "off" ]]; then
+  echo "DOMAIN_DNS_CHECK=off: skipping the DNS check of '$DOMAIN_NAME'"
+  return 0 2>/dev/null || exit 0
+fi
+
+if ! command -v dig > /dev/null; then
+  echo "ERROR: dig is required to check the DNS of '$DOMAIN_NAME' (bind-tools); set DOMAIN_DNS_CHECK=off to skip it" >&2
+  exit 1
+fi
+
+dns_problem() {
+  if [[ "$DOMAIN_DNS_CHECK" == "warn" ]]; then
+    echo "WARNING: $*"
+  else
+    echo "ERROR: $*" >&2
+    exit 1
+  fi
+}
+
+# Public domains are checked against public resolvers; the first that replies wins.
+RESOLVER_ARGS=()
+RESOLVER_LABEL="the agent's resolver"
+if [[ "$VISIBILITY" == "public" ]]; then
+  for RESOLVER in ${PUBLIC_DNS_RESOLVERS:-1.1.1.1 8.8.8.8}; do
+    if dig +time=3 +tries=1 +short "@$RESOLVER" . NS > /dev/null 2>&1; then
+      RESOLVER_ARGS=("@$RESOLVER")
+      RESOLVER_LABEL="public resolver $RESOLVER"
+      break
+    fi
+  done
+  if [[ ${#RESOLVER_ARGS[@]} -eq 0 ]]; then
+    echo "WARNING: no public resolver replied (${PUBLIC_DNS_RESOLVERS:-1.1.1.1 8.8.8.8}); using the agent's resolver"
+  fi
+fi
+
+# dig prints the CNAME chain followed by the addresses, one per line.
+resolve() {
+  local name="$1"
+  {
+    dig +time=3 +tries=2 +short ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} "$name" A
+    dig +time=3 +tries=2 +short ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} "$name" AAAA
+  } 2>/dev/null | { grep -v '^;' || true; } | sed 's/\.$//' | sort -u
+}
+
+echo "Checking DNS of '$DOMAIN_NAME' ($VISIBILITY) with $RESOLVER_LABEL..."
+
+ANSWER=$(resolve "$DOMAIN_NAME")
+
+if [[ -z "$ANSWER" ]]; then
+  # The authority section names the closest existing zone, even on NXDOMAIN.
+  ZONE=$({ dig +time=3 +tries=2 +noall +authority ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} "$DOMAIN_NAME" SOA 2>/dev/null || true; } |
+    awk '$4 == "SOA" && !found {print $1; found = 1}' | sed 's/\.$//')
+  if [[ -z "$ZONE" || "$ZONE" != *.* ]]; then
+    dns_problem "'$DOMAIN_NAME' doesn't exist in DNS: no zone serves it${ZONE:+ (only the TLD '$ZONE')}. Register the domain or fix the name."
+  else
+    dns_problem "'$DOMAIN_NAME' has no A/AAAA/CNAME record in zone '$ZONE'. Create the record pointing at the gateway first."
+  fi
+  return 0 2>/dev/null || exit 0
+fi
+
+echo "'$DOMAIN_NAME' resolves to: $(echo "$ANSWER" | tr '\n' ' ')"
+
+# Where the gateway can be reached: its status addresses and what they resolve to.
+GATEWAY_ADDRESSES=$(kubectl get gateway "$GATEWAY_NAME" -n "$GATEWAY_NAMESPACE" \
+  -o jsonpath='{range .status.addresses[*]}{.value}{"\n"}{end}' 2>/dev/null || true)
+
+if [[ -z "$GATEWAY_ADDRESSES" ]]; then
+  echo "WARNING: gateway $GATEWAY_NAMESPACE/$GATEWAY_NAME has no address yet; can't check that '$DOMAIN_NAME' points at it"
+  return 0 2>/dev/null || exit 0
+fi
+
+GATEWAY_TARGETS="$GATEWAY_ADDRESSES"
+while IFS= read -r ADDRESS; do
+  [[ -z "$ADDRESS" || "$ADDRESS" =~ ^[0-9.:]+$ ]] && continue
+  GATEWAY_TARGETS+=$'\n'"$({ dig +time=3 +tries=2 +short "$ADDRESS" A 2>/dev/null || true; } | { grep -v '^;' || true; } | sed 's/\.$//')"
+done <<< "$GATEWAY_ADDRESSES"
+
+if grep -qxFf <(echo "$GATEWAY_TARGETS" | sed '/^$/d') <<< "$ANSWER"; then
+  echo "✅ '$DOMAIN_NAME' points at gateway $GATEWAY_NAMESPACE/$GATEWAY_NAME"
+else
+  echo "WARNING: '$DOMAIN_NAME' doesn't point at gateway $GATEWAY_NAMESPACE/$GATEWAY_NAME" \
+    "($(echo "$GATEWAY_ADDRESSES" | tr '\n' ' ')). Unless a CDN or proxy forwards to it," \
+    "requests to the domain won't reach its routes: point the record at the gateway."
+fi

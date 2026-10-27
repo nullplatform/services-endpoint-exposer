@@ -5,54 +5,7 @@
 
 set -euo pipefail
 
-# Ensure a path starts with "/". The Kubernetes Gateway API rejects
-# non-absolute values for the `Exact` and `PathPrefix` match types with:
-#   spec.rules[N].matches[M].path: Invalid value: ...: value must be an
-#   absolute path and start with '/' when type one of ['Exact', 'PathPrefix']
-# Developers often enter "health" in the UI expecting it to become "/health",
-# so normalize here instead of surfacing a validator error per route.
-ensure_absolute_path() {
-  local path="$1"
-  if [[ "$path" != /* ]]; then
-    echo "/$path"
-  else
-    echo "$path"
-  fi
-}
-
-# Detect path type and convert path value accordingly
-# Returns: "type:value" format
-detect_path_type() {
-  local path="$1"
-
-  # Check for wildcard (*) - use PathPrefix
-  if [[ "$path" == *"*"* ]]; then
-    # Remove trailing /* or *
-    local prefix_path="${path%/*}"
-    if [[ -z "$prefix_path" ]]; then
-      prefix_path="/"
-    fi
-    prefix_path=$(ensure_absolute_path "$prefix_path")
-    echo "PathPrefix:$prefix_path"
-    return
-  fi
-
-  # Check for path parameters (:param) - use RegularExpression
-  if [[ "$path" == *:* ]]; then
-    # Replace :param with [^/]+
-    local regex_path="${path//:+([^\/])/[^/]+}"
-    # For bash pattern replacement, we need to handle it differently
-    regex_path=$(echo "$path" | sed 's/:[^/]*/[^\/]+/g')
-    # RegularExpression values are not required to be absolute by Gateway API,
-    # so we leave them untouched.
-    echo "RegularExpression:$regex_path"
-    return
-  fi
-
-  # Default: Exact match
-  path=$(ensure_absolute_path "$path")
-  echo "Exact:$path"
-}
+source "$SERVICE_PATH/scripts/istio/path_utils"
 
 # Get priority for path type (lower number = higher priority)
 get_path_priority() {

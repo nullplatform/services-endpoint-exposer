@@ -8,9 +8,9 @@ FROM public.ecr.aws/nullplatform/scopes/worker-bridge:2.0.6
 
 # Tooling the exposer workflows call (istio/gateway objects, template
 # rendering): kubectl + gomplate + yq (HTTPRoute YAML manipulation in
-# scripts/istio/build_ingress_with_rule). bash, jq, np, base64 and curl
-# ship in the base.
-RUN apk add --no-cache kubectl gomplate yq-go
+# scripts/istio/build_ingress_with_rule) + dig (bind-tools, the domain DNS check
+# in scripts/istio/check_domain_dns). bash, jq, np, base64 and curl ship in the base.
+RUN apk add --no-cache kubectl gomplate yq-go bind-tools
 
 # Bake the service in and point the bridge at its entrypoint.
 # Bake the service in. --chown so the files belong to the uid this image runs

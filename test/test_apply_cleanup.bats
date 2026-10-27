@@ -146,6 +146,24 @@ EOF
 }
 
 @test "delete workflow: HTTPRoutes go before the policies" {
-  steps=$(grep -E '^  - name:' "$SERVICE_PATH/workflows/istio/delete.yaml" | sed 's/.*name: //; s/"//g' | tr '\n' '|')
+  steps=$(grep -E '^  - name:' "$SERVICE_PATH/workflows/istio/legacy/delete.yaml" | sed 's/.*name: //; s/"//g' | tr '\n' '|')
   [[ "$steps" == *"delete httproutes|manage policies|sync gateway baseline|apply|"* ]]
+}
+
+@test "domain service delete and unlink: sync the gateway baseline after removing the resources" {
+  steps=$(grep -E '^  - name:' "$SERVICE_PATH/workflows/istio/delete.yaml" | sed 's/.*name: //; s/"//g' | tr '\n' '|')
+  [[ "$steps" == *"delete service resources|sync gateway baseline|"* ]]
+  steps=$(grep -E '^  - name:' "$SERVICE_PATH/workflows/istio/unlink.yaml" | sed 's/.*name: //; s/"//g' | tr '\n' '|')
+  [[ "$steps" == *"delete link resources|sync gateway baseline|"* ]]
+  # Each delete deletes the HTTPRoute before the policies.
+  for script in delete_link_resources delete_service_resources; do
+    file="$SERVICE_PATH/scripts/istio/$script"
+    [[ $(grep -n 'delete httproute' "$file" | cut -d: -f1) -lt $(grep -n 'delete authorizationpolicy' "$file" | cut -d: -f1) ]]
+  done
+}
+
+@test "link workflow: the baseline already excludes the hosts of the policies about to be applied" {
+  steps=$(grep -E '^  - name:' "$SERVICE_PATH/workflows/istio/link.yaml" | sed 's/.*name: //; s/"//g' | tr '\n' '|')
+  [[ "$steps" == *"build policies|sync gateway baseline|apply|"* ]]
+  grep -A4 'sync gateway baseline' "$SERVICE_PATH/workflows/istio/link.yaml" | grep -q 'BASELINE_INCLUDE_RENDERED: "true"'
 }
