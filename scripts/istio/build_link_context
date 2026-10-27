@@ -154,6 +154,26 @@ if [[ "$(echo "$ROUTES_JSON" | jq 'any(.[]; .scope == "")')" == "true" ]]; then
   ROUTES_JSON=$(echo "$ROUTES_JSON" | jq -c --arg scope "$ROUTE_SCOPE" 'map(if .scope == "" then .scope = $scope else . end)')
 fi
 
+# The link's HTTPRoute lives next to the Services of its scopes (resolve_scope_namespace),
+# so the application can run in its own namespace. Backends in several namespaces
+# would need a ReferenceGrant, which is not supported. Unknown scopes are left to
+# process_routes, which fails on them.
+APP_SCOPES="${APP_SCOPES:-$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq -c '.results // []')}"
+ROUTE_NAMESPACES=""
+while IFS= read -r SCOPE_SLUG; do
+  SCOPE_ID=$(echo "$APP_SCOPES" | jq -r --arg slug "$SCOPE_SLUG" '.[] | select(.slug == $slug) | .id')
+  [[ -z "$SCOPE_ID" || "$SCOPE_ID" == "null" ]] && continue
+  SCOPE_NAMESPACE=$("$SERVICE_PATH/scripts/istio/resolve_scope_namespace" "$SCOPE_ID")
+  ROUTE_NAMESPACES=$(printf '%s\n%s' "$ROUTE_NAMESPACES" "$SCOPE_NAMESPACE" | sed '/^$/d' | sort -u)
+done < <(echo "$ROUTES_JSON" | jq -r '[.[].scope] | unique | .[]')
+
+if [[ "$(echo -n "$ROUTE_NAMESPACES" | grep -c '^' || true)" -gt 1 ]]; then
+  echo "ERROR: the link's routes point to scopes in different namespaces: $(echo "$ROUTE_NAMESPACES" | tr '\n' ' ')" >&2
+  exit 1
+fi
+K8S_NAMESPACE="${ROUTE_NAMESPACES:-$K8S_NAMESPACE}"
+echo "Link HTTPRoute namespace: $K8S_NAMESPACE"
+
 # resolve_auth also rejects a route without groups unless AUTH_TYPE=none: with auth,
 # an ALLOW policy without groups would let any request through on that path.
 ENV_DIMENSION=$(echo "$CONTEXT" | jq -r --argjson service "$SERVICE_JSON" '

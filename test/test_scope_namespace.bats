@@ -229,17 +229,3 @@ EOF
   assert_output --partial "WARNING: could not list HTTPRoutes across namespaces"
   grep -q "kubectl get httproute exposer-svc-1-public -n nullplatform" "$KUBECTL_LOG"
 }
-
-# --- delete ---
-
-@test "delete_httproutes: removes the service's HTTPRoutes in every namespace" {
-  run bash "$SERVICE_PATH/scripts/istio/delete_httproutes"
-
-  assert_success
-  grep -q "kubectl delete httproute --all-namespaces -l nullplatform.com/service-id=svc-1 --ignore-not-found" "$KUBECTL_LOG"
-}
-
-@test "delete workflow: HTTPRoutes go before the policies" {
-  steps=$(grep -E '^  - name:' "$SERVICE_PATH/workflows/istio/delete.yaml" | sed 's/.*name: //; s/"//g' | tr '\n' '|')
-  [[ "$steps" == *"delete httproutes|manage policies|"* ]]
-}

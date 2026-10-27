@@ -18,6 +18,12 @@ setup() {
   export COGNITO_USER_POOL_ARN_DEV="arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_AbCdEf"
   export CONTEXT="$(load_fixture link-notification)"
 
+  # No scopes or Services unless a test sets them (scope_env): the link's HTTPRoute
+  # stays in the default namespace.
+  export NP_SCOPE_LIST_FILE="$TEST_TEMP_DIR/scopes.json" KUBECTL_SERVICES_FILE="$TEST_TEMP_DIR/services.json"
+  echo '{"results": []}' > "$NP_SCOPE_LIST_FILE"
+  echo '{"items": []}' > "$KUBECTL_SERVICES_FILE"
+
   # np mock: canned responses from files, every call logged
   cat > "$TEST_TEMP_DIR/np" << 'EOF'
 #!/bin/bash
@@ -468,7 +474,9 @@ scope_env() {
   export NP_SCOPE_LIST_FILE="$TEST_TEMP_DIR/scopes.json" KUBECTL_SERVICES_FILE="$TEST_TEMP_DIR/services.json"
   jq -c '{results: [.[] | {id, slug, status: (.status // "active"), dimensions: {environment: "dev"},
     capabilities: {visibility: {reachability: .reachability}}}]}' <<< "$1" > "$NP_SCOPE_LIST_FILE"
-  jq -c '{items: [.[] | select(.routable != false) | {spec: {selector: {scope_id: (.id | tostring)}}}]}' <<< "$1" > "$KUBECTL_SERVICES_FILE"
+  jq -c '{items: [.[] | select(.routable != false)
+    | {metadata: {namespace: (.namespace // "nullplatform")}, spec: {selector: {scope_id: (.id | tostring)}}}]}' \
+    <<< "$1" > "$KUBECTL_SERVICES_FILE"
   export CONTEXT="$(jq -c 'del(.parameters.scope) | del(.link.attributes.scope) | .link.scope = null' <<< "$CONTEXT")"
 }
 
@@ -753,7 +761,7 @@ conflict_env() {
   run bash "$SERVICE_PATH/scripts/istio/delete_link_resources"
 
   assert_success
-  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "delete httproute -n nullplatform -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=link-5678"
+  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "delete httproute --all-namespaces -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=link-5678"
   assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "delete authorizationpolicy -n gateways -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=link-5678"
 }
 
@@ -809,4 +817,92 @@ conflict_env() {
   run bash "$SERVICE_PATH/scripts/np/check_active_links"
 
   assert_success
+}
+
+# --- apps in their own namespace ----------------------------------------------
+
+@test "build_link_context: the link's HTTPRoute goes to the namespace of its scope's Services" {
+  scope_env '[{"id": 1, "slug": "pub", "reachability": "public", "namespace": "team-a"}]'
+
+  run_context_script build_link_context ROUTES_JSON K8S_NAMESPACE
+
+  assert_success
+  assert_output --partial '"scope":"pub"'
+  assert_output --partial "K8S_NAMESPACE=team-a"
+  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "get services --all-namespaces"
+}
+
+@test "build_link_context: a scope named on the route resolves its namespace too" {
+  scope_env '[{"id": 7, "slug": "users-prod", "reachability": "public", "namespace": "team-b"}]'
+  routes_context '[{"path": "/api/users", "groups": ["admin"], "scope": "users-prod"}]'
+
+  run_context_script build_link_context K8S_NAMESPACE
+
+  assert_success
+  assert_output --partial "K8S_NAMESPACE=team-b"
+}
+
+@test "build_link_context: an app without Services yet keeps the default namespace" {
+  scope_env '[{"id": 7, "slug": "users-prod", "reachability": "public", "routable": false}]'
+  routes_context '[{"path": "/api/users", "groups": ["admin"], "scope": "users-prod"}]'
+
+  run_context_script build_link_context K8S_NAMESPACE
+
+  assert_success
+  assert_output --partial "K8S_NAMESPACE=nullplatform"
+}
+
+@test "build_link_context: NAMESPACE_OVERRIDE places the link's HTTPRoute" {
+  scope_env '[{"id": 7, "slug": "users-prod", "reachability": "public", "namespace": "team-b"}]'
+  routes_context '[{"path": "/api/users", "groups": ["admin"], "scope": "users-prod"}]'
+
+  NAMESPACE_OVERRIDE=fixed run_context_script build_link_context K8S_NAMESPACE
+
+  assert_success
+  assert_output --partial "K8S_NAMESPACE=fixed"
+}
+
+@test "build_link_context: refuses routes to scopes in different namespaces" {
+  scope_env '[
+    {"id": 7, "slug": "users-prod",  "reachability": "public", "namespace": "team-a"},
+    {"id": 8, "slug": "health-prod", "reachability": "public", "namespace": "team-b"}]'
+  routes_context '[
+    {"path": "/api/users", "groups": ["admin"], "scope": "users-prod"},
+    {"path": "/health", "groups": ["ops"], "scope": "health-prod"}]'
+
+  run_context_script build_link_context K8S_NAMESPACE
+
+  assert_failure
+  assert_output --partial "scopes in different namespaces: team-a team-b"
+}
+
+@test "check_link_conflict: looks for conflicts in every namespace" {
+  conflict_env "/api/users" '["GET"]'
+  httproute_items '[{"name": "r1", "link_id": "link-other", "host": "api.acme.com", "path": "/api/users", "method": "GET"}]' > "$KUBECTL_HTTPROUTES_FILE"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_link_conflict"
+
+  assert_failure
+  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "get httproute --all-namespaces"
+}
+
+@test "validate_domain: checks the domain owner in every namespace" {
+  export KUBECTL_GATEWAY_FILE="$TEST_TEMP_DIR/gateway.json" KUBECTL_HTTPROUTES_FILE="$TEST_TEMP_DIR/httproutes.json"
+  export GATEWAY_NAME=gateway-public SERVICE_ID=svc-1234 K8S_NAMESPACE=nullplatform
+  jq -n '{spec: {listeners: [{hostname: "*.acme.com"}]}}' > "$KUBECTL_GATEWAY_FILE"
+  echo '{"items": []}' > "$KUBECTL_HTTPROUTES_FILE"
+
+  DOMAIN_NAME=api.acme.com run bash "$SERVICE_PATH/scripts/istio/validate_domain"
+
+  assert_success
+  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "get httproute --all-namespaces"
+}
+
+@test "delete_service_resources: removes leftover HTTPRoutes in every namespace" {
+  export SERVICE_ID=svc-1234 K8S_NAMESPACE=nullplatform
+
+  run bash "$SERVICE_PATH/scripts/istio/delete_service_resources"
+
+  assert_success
+  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "delete httproute --all-namespaces -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/service-id=svc-1234"
 }

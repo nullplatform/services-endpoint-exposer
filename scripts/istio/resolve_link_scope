@@ -15,7 +15,7 @@
 #
 # Sourced by build_link_context.
 # Required: CONTEXT, APPLICATION_ID, VISIBILITY (public|private), K8S_NAMESPACE
-# Sets: ROUTE_SCOPE
+# Sets: ROUTE_SCOPE, APP_SCOPES
 
 LINK_DIMENSIONS=$(echo "$CONTEXT" | jq -c '.link.dimensions // {}')
 
@@ -23,9 +23,14 @@ echo "Resolving the $VISIBILITY scope of application $APPLICATION_ID for dimensi
 
 APP_SCOPES=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq -c '.results // []')
 
-if ! K8S_SERVICES=$(kubectl get services -n "$K8S_NAMESPACE" -o json 2>&1); then
-  echo "ERROR: could not list Services in $K8S_NAMESPACE: $K8S_SERVICES" >&2
-  exit 1
+# The application may run in its own namespace, so its Services are looked up across
+# the cluster; without cluster-wide list, only K8S_NAMESPACE (the previous behavior).
+if ! K8S_SERVICES=$(kubectl get services --all-namespaces -o json 2>/dev/null); then
+  echo "WARNING: could not list Services across namespaces; looking only in $K8S_NAMESPACE"
+  if ! K8S_SERVICES=$(kubectl get services -n "$K8S_NAMESPACE" -o json 2>&1); then
+    echo "ERROR: could not list Services in $K8S_NAMESPACE: $K8S_SERVICES" >&2
+    exit 1
+  fi
 fi
 ROUTABLE_SCOPE_IDS=$(echo "$K8S_SERVICES" | jq -c '[.items[].spec.selector.scope_id // empty] | unique')
 

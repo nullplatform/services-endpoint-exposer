@@ -10,8 +10,9 @@ source "$SERVICE_PATH/scripts/istio/config"
 
 LABELS="nullplatform.com/managed-by=http-route-access-control,nullplatform.com/service-id=$SERVICE_ID"
 
-echo "Deleting leftover HTTPRoutes for service $SERVICE_ID in $K8S_NAMESPACE..."
-kubectl delete httproute -n "$K8S_NAMESPACE" -l "$LABELS" --ignore-not-found
+# Each link's HTTPRoute lives in its application's namespace.
+echo "Deleting leftover HTTPRoutes for service $SERVICE_ID in every namespace..."
+kubectl delete httproute --all-namespaces -l "$LABELS" --ignore-not-found
 
 echo "Deleting leftover AuthorizationPolicies for service $SERVICE_ID in $GATEWAY_NAMESPACE..."
 kubectl delete authorizationpolicy -n "$GATEWAY_NAMESPACE" -l "$LABELS" --ignore-not-found

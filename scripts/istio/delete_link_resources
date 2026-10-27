@@ -9,8 +9,10 @@ source "$SERVICE_PATH/scripts/istio/config"
 
 LABELS="nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=$LINK_ID"
 
-echo "Deleting HTTPRoute of link $LINK_ID in $K8S_NAMESPACE..."
-kubectl delete httproute -n "$K8S_NAMESPACE" -l "$LABELS" --ignore-not-found
+# The HTTPRoute lives in its application's namespace, which unlink doesn't resolve:
+# the link-id label is unique, so it is deleted wherever it is.
+echo "Deleting HTTPRoute of link $LINK_ID in every namespace..."
+kubectl delete httproute --all-namespaces -l "$LABELS" --ignore-not-found
 
 echo "Deleting AuthorizationPolicies of link $LINK_ID in $GATEWAY_NAMESPACE..."
 kubectl delete authorizationpolicy -n "$GATEWAY_NAMESPACE" -l "$LABELS" --ignore-not-found
