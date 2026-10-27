@@ -46,6 +46,11 @@ steps:
   - name: "build policies"
     type: script
     file: "$SERVICE_PATH/scripts/istio/build_link_policies"
+  - name: "sync gateway baseline"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
+    configuration:
+      BASELINE_INCLUDE_RENDERED: "true"
   - name: apply
     type: script
     file: "$SERVICE_PATH/scripts/common/apply"

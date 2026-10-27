@@ -13,5 +13,8 @@ LABELS="nullplatform.com/managed-by=http-route-access-control,nullplatform.com/s
 echo "Deleting leftover HTTPRoutes for service $SERVICE_ID in $K8S_NAMESPACE..."
 kubectl delete httproute -n "$K8S_NAMESPACE" -l "$LABELS" --ignore-not-found
 
+# sync_gateway_baseline only stops excluding hosts that a run removed.
+kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" -l "$LABELS" -o json \
+  | jq -r '.items[].spec.rules[]?.to[]?.operation.hosts[]?' >> "$OUTPUT_DIR/.authz-removed-hosts" || true
 echo "Deleting leftover AuthorizationPolicies for service $SERVICE_ID in $GATEWAY_NAMESPACE..."
 kubectl delete authorizationpolicy -n "$GATEWAY_NAMESPACE" -l "$LABELS" --ignore-not-found

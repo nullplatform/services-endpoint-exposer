@@ -9,6 +9,11 @@ steps:
         type: environment
       - name: K8S_NAMESPACE
         type: environment
+      - name: AUTH_TYPE
+        type: environment
   - name: "delete link resources"
     type: script
     file: "$SERVICE_PATH/scripts/istio/delete_link_resources"
+  - name: "sync gateway baseline"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"

@@ -54,6 +54,8 @@ export K8S_NAMESPACE
 
 if [[ "$LINK_OPERATION" == "delete" ]]; then
   echo "Unlink $LINK_ID from service $SERVICE_SLUG ($SERVICE_ID)"
+  # sync_gateway_baseline only runs for the modes with ALLOW policies; unset is none.
+  export AUTH_TYPE="${AUTH_TYPE:-none}"
   return 0 2>/dev/null || exit 0
 fi
 
