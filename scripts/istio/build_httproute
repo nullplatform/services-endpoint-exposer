@@ -83,6 +83,7 @@ else
     --arg name "$SERVICE_SLUG-$SERVICE_ID-$SUFFIX" \
     --arg service_slug "$SERVICE_SLUG" \
     --arg service_id "$SERVICE_ID" \
+    --arg link_id "" \
     --arg k8s_namespace "$K8S_NAMESPACE" \
     --argjson hostnames "$HOSTNAMES_JSON" \
     --arg gateway_name "$GATEWAY_NAME" \
@@ -92,6 +93,7 @@ else
       name: $name,
       service_slug: $service_slug,
       service_id: $service_id,
+      link_id: $link_id,
       k8s_namespace: $k8s_namespace,
       hostnames: $hostnames,
       gateway_name: $gateway_name,
