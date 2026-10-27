@@ -191,7 +191,12 @@ Each HTTPRoute is created in the namespace of the Services it routes to, so no R
 2. The namespace of the Services whose selector has the scope's `scope_id`, searched across the cluster.
 3. `nullplatform`, when the scope has no Service yet.
 
-All the routes of one exposer instance must point to scopes in the same namespace. For applications outside `nullplatform`, the agent needs cluster-wide `list` on `services` and `httproutes`, plus `create`, `patch` and `delete` on `httproutes` in those namespaces. The gateway listeners must also accept routes from them (`allowedRoutes.namespaces`). Without cluster-wide `list`, the exposer keeps the previous behavior and works in `nullplatform` only.
+All the routes of one link (or of one legacy service) must point to scopes in the same namespace. The links of one domain can live in different namespaces, so the link conflict and domain-owner checks read HTTPRoutes across the cluster.
+
+Requirements for applications outside `nullplatform`:
+
+- The agent needs cluster-wide `list` on `services` and `httproutes`, plus `create`, `patch` and `delete` on `httproutes` in those namespaces. Without cluster-wide `list`, routes stay in `nullplatform` (the previous behavior), but domain service create and link create or update fail, since the domain owner and conflicts can't be checked.
+- The gateway listeners must accept routes from those namespaces (`allowedRoutes.namespaces.from: All` or a `Selector`).
 
 #### Example — OpenTofu agent module
 
