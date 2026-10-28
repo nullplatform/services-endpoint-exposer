@@ -11,7 +11,7 @@
         "schema": {
             "type": "object",
             "$schema": "http://json-schema.org/draft-07/schema#",
-            "required": [],
+            "required": ["domain_name"],
             "uiSchema": {
                 "type": "VerticalLayout",
                 "elements": [

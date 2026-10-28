@@ -972,3 +972,14 @@ conflict_env() {
   assert_success
   assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "delete httproute --all-namespaces -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/service-id=svc-1234"
 }
+
+# --- service spec --------------------------------------------------------------
+
+@test "service spec: domain_name is required, so the form refuses an empty domain" {
+  # The UI validates the create (and update) form against the spec's required list;
+  # without it an empty domain reached the agent and failed there.
+  run bash -c "sed 's/{{[^}]*}}/x/g' \"$SERVICE_PATH/specs/service-spec.json.tpl\" | jq -c '.attributes.schema.required'"
+
+  assert_success
+  assert_output '["domain_name"]'
+}
