@@ -287,3 +287,13 @@ build_link_httproute() {
   grep -q "kubectl delete httproute --all-namespaces --ignore-not-found -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=link-1" "$KUBECTL_LOG"
   assert_file_not_exists "$OUTPUT_DIR/.httproute-link-deleted"
 }
+
+@test "resolve_scope_namespace: a NAMESPACE_OVERRIDE the channel didn't interpolate is ignored" {
+  set_items "$KUBECTL_SERVICES" "$(service team-a 101 d-101-1)"
+
+  NAMESPACE_OVERRIDE='{context.tags.namespace}' run "$SERVICE_PATH/scripts/istio/resolve_scope_namespace" 101
+
+  assert_success
+  assert_output --partial "WARNING: ignoring NAMESPACE_OVERRIDE='{context.tags.namespace}'"
+  [[ "${lines[${#lines[@]}-1]}" == "team-a" ]]
+}

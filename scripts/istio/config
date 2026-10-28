@@ -22,3 +22,12 @@ export COGNITO_TOKEN_COOKIE_NAME="${COGNITO_TOKEN_COOKIE_NAME:-}"
 # happens to select a scope_id (a test echo, a hand-made Service) is never a
 # backend. Usage: jq "$PLATFORM_SERVICES_JQ"' platform_services | ...'
 export PLATFORM_SERVICES_JQ='def platform_services: [.items[]? | select(.spec.selector.nullplatform == "true" and (.spec.selector.scope_id // "") != "" and (.spec.selector.deployment_id // "") != "")];'
+
+# NAMESPACE_OVERRIDE set on the channel as a template (e.g.
+# "{context.tags.namespace}") reaches the agent literally when the channel
+# doesn't interpolate it. That isn't a namespace: ignore it, so the namespace is
+# resolved from the scope's Services instead of failing every kubectl call.
+if [[ "${NAMESPACE_OVERRIDE:-}" == *"{"* || "${NAMESPACE_OVERRIDE:-}" == *"}"* ]]; then
+  echo "WARNING: ignoring NAMESPACE_OVERRIDE='$NAMESPACE_OVERRIDE': it was not interpolated" >&2
+  unset NAMESPACE_OVERRIDE
+fi
