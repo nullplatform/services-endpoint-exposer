@@ -569,20 +569,31 @@ scope_env() {
 
 }
 
-@test "build_link_context: without a scope, several matches pick active first, then the oldest" {
+@test "build_link_context: without a scope, several active matches fail and ask for the scope" {
+  scope_env '[
+    {"id": 2, "slug": "production",    "reachability": "public"},
+    {"id": 3, "slug": "production-v2", "reachability": "public"}
+  ]'
+
+  run bash -c "source \"$SERVICE_PATH/scripts/istio/build_link_context\" && echo \"ROUTES_JSON=\$ROUTES_JSON\""
+
+  assert_failure
+  assert_output --partial "more than one public scope"
+  assert_output --partial "production (active), production-v2 (active)"
+  assert_output --partial "Name the scope on each route of the link."
+}
+
+@test "build_link_context: without a scope, a single active match wins over inactive ones" {
   scope_env '[
     {"id": 1, "slug": "old-failed", "reachability": "public", "status": "failed"},
-    {"id": 2, "slug": "newer",      "reachability": "public"},
-    {"id": 3, "slug": "older",      "reachability": "public"}
+    {"id": 2, "slug": "production", "reachability": "public"}
   ]'
-  jq -c '.results |= map(.created_at = ({"1": "2024-01-01", "2": "2026-05-01", "3": "2025-03-01"}[.id | tostring]))' \
-    "$NP_SCOPE_LIST_FILE" > "$NP_SCOPE_LIST_FILE.tmp" && mv "$NP_SCOPE_LIST_FILE.tmp" "$NP_SCOPE_LIST_FILE"
 
   run bash -c "source \"$SERVICE_PATH/scripts/istio/build_link_context\" && echo \"ROUTES_JSON=\$ROUTES_JSON\""
 
   assert_success
-  assert_output --partial '"scope":"older"'
-  assert_output --partial "other public scopes also match: newer (active), old-failed (failed)"
+  assert_output --partial '"scope":"production"'
+  assert_output --partial "inactive public scopes also match: old-failed (failed)"
 }
 
 # --- routes list ---

@@ -7,10 +7,9 @@
 # context), so the scope is resolved from the service's visibility instead: the
 # application's scope in the link's dimensions whose visibility matches (public →
 # reachability public / visibility external, private → anything else) and that has
-# a Kubernetes Service to route to. With several matches the pick is deterministic,
-# never "whatever the API listed first": active scopes first, then the oldest. It is
-# logged with the other candidates and stored on the link (update_link_results), so
-# the developer sees which scope serves the path and can name another one.
+# a Kubernetes Service to route to. A single active match (or a single match) is
+# used, logged and stored on the link (update_link_results). Several active matches
+# fail and ask for the scope on the link: guessing could route to the wrong one.
 # No match fails.
 #
 # Sourced by build_link_context.
@@ -57,11 +56,27 @@ if [[ "$(echo "$CANDIDATES" | jq 'length')" -eq 0 ]]; then
   exit 1
 fi
 
-ROUTE_SCOPE=$(echo "$CANDIDATES" | jq -r '.[0].slug')
-echo "Resolved scope: $ROUTE_SCOPE (id $(echo "$CANDIDATES" | jq -r '.[0].id'), $(echo "$CANDIDATES" | jq -r '.[0].status'))"
+# One active scope (or a single candidate) is unambiguous. With several, guessing
+# could send the link to the wrong one (e.g. a new scope that replaces an old
+# one), so the developer has to name it.
+ACTIVE=$(echo "$CANDIDATES" | jq -c 'map(select(.status == "active"))')
+if [[ "$(echo "$ACTIVE" | jq 'length')" -eq 1 ]]; then
+  PICKED="$ACTIVE"
+elif [[ "$(echo "$ACTIVE" | jq 'length')" -eq 0 && "$(echo "$CANDIDATES" | jq 'length')" -eq 1 ]]; then
+  PICKED="$CANDIDATES"
+else
+  AMBIGUOUS="$CANDIDATES"
+  [[ "$(echo "$ACTIVE" | jq 'length')" -gt 1 ]] && AMBIGUOUS="$ACTIVE"
+  echo "ERROR: application $APPLICATION_ID has more than one $VISIBILITY scope for dimensions $LINK_DIMENSIONS:" \
+    "$(echo "$AMBIGUOUS" | jq -r 'map("\(.slug) (\(.status))") | join(", ")')." >&2
+  echo "Name the scope on each route of the link." >&2
+  exit 1
+fi
 
-OTHER_SCOPES=$(echo "$CANDIDATES" | jq -r '.[1:] | map("\(.slug) (\(.status))") | join(", ")')
+ROUTE_SCOPE=$(echo "$PICKED" | jq -r '.[0].slug')
+echo "Resolved scope: $ROUTE_SCOPE (id $(echo "$PICKED" | jq -r '.[0].id'), $(echo "$PICKED" | jq -r '.[0].status'))"
+
+OTHER_SCOPES=$(echo "$CANDIDATES" | jq -r --arg slug "$ROUTE_SCOPE" 'map(select(.slug != $slug) | "\(.slug) (\(.status))") | join(", ")')
 if [[ -n "$OTHER_SCOPES" ]]; then
-  echo "WARNING: other $VISIBILITY scopes also match: $OTHER_SCOPES. $ROUTE_SCOPE was picked" \
-    "(active first, then the oldest); name the scope on the link to use another one."
+  echo "WARNING: inactive $VISIBILITY scopes also match: $OTHER_SCOPES. $ROUTE_SCOPE is the only active one."
 fi
