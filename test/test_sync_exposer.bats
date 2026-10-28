@@ -207,3 +207,15 @@ domain_model() {
   assert_output --partial "No endpoint exposer routes to this scope"
   ! grep -q "action create" "$NP_CALLS"
 }
+
+@test "sync_exposer: a link with a single top-level path is sent as a one-route list" {
+  domain_model
+  export NP_LINKS='[{"id":"link-1","name":"one","service_id":"svc-d","specification_id":"ls-1","status":"active",
+    "attributes":{"path":"/prueba","methods":["ALL"],"scope":"prod","groups":[],"auth_type":"none","endpoint":"api.acme.com/prueba","summary":"ALL | /prueba"}}]'
+
+  run bash "$SCRIPT"
+
+  assert_success
+  body=$(grep "link action create --linkId link-1" "$NP_CALLS" | sed 's/.*--body //; s/ --format json$//')
+  [[ "$(jq -c '.parameters' <<< "$body")" == '{"routes":[{"path":"/prueba","methods":["ALL"],"scope":"prod","groups":[]}]}' ]]
+}

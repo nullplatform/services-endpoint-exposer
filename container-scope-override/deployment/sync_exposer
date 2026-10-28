@@ -171,9 +171,16 @@ main() {
     fi
 
     # The routes as the user declared them; build_link_context recomputes the
-    # derived fields (endpoints, summaries, auth_type).
-    PARAMETERS=$(jq -c '.attributes | del(.endpoint, .endpoints, .summary, .auth_type)
-      | if .routes then .routes |= map(del(.summary)) else . end' <<< "$LINK")
+    # derived fields (endpoints, summaries, auth_type). Links created before the
+    # routes list kept a single path at the top level, which the update action
+    # rejects ("must have required property 'routes'"): send it as a one-route list.
+    PARAMETERS=$(jq -c '.attributes
+      | if .routes then . else
+          {routes: [{path, methods, scope, groups} | with_entries(select(.value != null))]}
+          + del(.path, .methods, .scope, .groups)
+        end
+      | del(.endpoint, .endpoints, .summary, .auth_type)
+      | .routes |= map(del(.summary))' <<< "$LINK")
     if ! sync link "$LINK_ID" "$LINK_NAME" "$LINK_ACTION_SPEC_ID" "$PARAMETERS"; then
       FAILED+=("$LINK_NAME [$LINK_ID]")
     fi
