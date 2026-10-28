@@ -475,7 +475,7 @@ scope_env() {
   jq -c '{results: [.[] | {id, slug, status: (.status // "active"), dimensions: {environment: "dev"},
     capabilities: {visibility: {reachability: .reachability}}}]}' <<< "$1" > "$NP_SCOPE_LIST_FILE"
   jq -c '{items: [.[] | select(.routable != false)
-    | {metadata: {namespace: (.namespace // "nullplatform")}, spec: {selector: {scope_id: (.id | tostring)}}}]}' \
+    | {metadata: {namespace: (.namespace // "nullplatform")}, spec: {selector: {nullplatform: "true", scope_id: (.id | tostring), deployment_id: "1"}}}]}' \
     <<< "$1" > "$KUBECTL_SERVICES_FILE"
   export CONTEXT="$(jq -c 'del(.parameters.scope) | del(.link.attributes.scope) | .link.scope = null' <<< "$CONTEXT")"
 }

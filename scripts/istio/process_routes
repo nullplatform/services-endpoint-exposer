@@ -92,6 +92,10 @@ for ((i=0; i<NUM_ROUTES; i++)); do
     export RULE_PATH="$ROUTE_PATH"
     unset METHOD
     source "$SERVICE_PATH/scripts/istio/build_rule"
+    if [[ -z "$SCOPE_RULE" ]]; then
+      echo "WARNING: route $ROUTE_PATH skipped: scope $SCOPE_SLUG has no backend"
+      continue
+    fi
     source "$SERVICE_PATH/scripts/istio/build_ingress_with_rule"
   else
     for ((j=0; j<NUM_METHODS; j++)); do
@@ -101,6 +105,10 @@ for ((i=0; i<NUM_ROUTES; i++)); do
       export RULE_PATH="$ROUTE_PATH"
       export METHOD
       source "$SERVICE_PATH/scripts/istio/build_rule"
+      if [[ -z "$SCOPE_RULE" ]]; then
+        echo "WARNING: route $METHOD $ROUTE_PATH skipped: scope $SCOPE_SLUG has no backend"
+        continue
+      fi
       source "$SERVICE_PATH/scripts/istio/build_ingress_with_rule"
     done
   fi

@@ -16,3 +16,9 @@ export OPA_PROVIDER_NAME="${OPA_PROVIDER_NAME:-}"
 # When set, Istio extracts the JWT from this cookie name instead of relying on
 # the default Authorization header / access_token query param.
 export COGNITO_TOKEN_COOKIE_NAME="${COGNITO_TOKEN_COOKIE_NAME:-}"
+
+# Kubernetes Services the scope agent creates for a deployment: the selector
+# carries nullplatform: "true", scope_id and deployment_id. Anything else that
+# happens to select a scope_id (a test echo, a hand-made Service) is never a
+# backend. Usage: jq "$PLATFORM_SERVICES_JQ"' platform_services | ...'
+export PLATFORM_SERVICES_JQ='def platform_services: [.items[]? | select(.spec.selector.nullplatform == "true" and (.spec.selector.scope_id // "") != "" and (.spec.selector.deployment_id // "") != "")];'

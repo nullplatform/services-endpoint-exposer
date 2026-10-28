@@ -188,8 +188,10 @@ module "endpoint_exposer_requirements" {
 Each HTTPRoute is created in the namespace of the Services it routes to, so no ReferenceGrant is needed. The namespace of a scope is resolved by `scripts/istio/resolve_scope_namespace`, in this order:
 
 1. `NAMESPACE_OVERRIDE`, when set on the agent or channel (e.g. `{context.tags.namespace}`, the same value the scope agent uses).
-2. The namespace of the Services whose selector has the scope's `scope_id`, searched across the cluster.
+2. The namespace of the platform's Services whose selector has the scope's `scope_id`, searched across the cluster.
 3. `nullplatform`, when the scope has no Service yet.
+
+Only the Services the scope agent creates count, here and when picking the backend: their selector carries `nullplatform: "true"`, `scope_id` and `deployment_id`. Another Service that selects a `scope_id` (a test echo, a hand-made one) is never routed to. A route whose scope has no such Service yet (not deployed, or failed) is left out of the HTTPRoute with a warning, so the gateway answers 404 on it until the scope is deployed and the deploy sync updates the exposer; a link with no backend at all gets no HTTPRoute. The link also logs a warning when its scope isn't `active` or has no active deployment.
 
 All the routes of one link (or of one legacy service) must point to scopes in the same namespace. The links of one domain can live in different namespaces, so the link conflict and domain-owner checks read HTTPRoutes across the cluster.
 

@@ -32,7 +32,8 @@ if ! K8S_SERVICES=$(kubectl get services --all-namespaces -o json 2>/dev/null); 
     exit 1
   fi
 fi
-ROUTABLE_SCOPE_IDS=$(echo "$K8S_SERVICES" | jq -c '[.items[].spec.selector.scope_id // empty] | unique')
+# Only the platform's Services make a scope routable (PLATFORM_SERVICES_JQ in config).
+ROUTABLE_SCOPE_IDS=$(echo "$K8S_SERVICES" | jq -c "$PLATFORM_SERVICES_JQ"' platform_services | [.[].spec.selector.scope_id] | unique')
 
 CANDIDATES=$(echo "$APP_SCOPES" | jq -c \
   --argjson dims "$LINK_DIMENSIONS" \
