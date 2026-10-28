@@ -16,6 +16,11 @@
 # in front, but usually it means the requests will never reach the gateway.
 #
 # DOMAIN_DNS_CHECK: enforce (default) | warn (report, never fail) | off (skip)
+#
+# The agent images don't ship dig, so the check uses whatever is there
+# (DNS_TOOL=auto, default): dig, else getent (the agent's resolver only, which
+# can't name the zone of a missing record), else it warns and skips: a check
+# that can't run doesn't block the service.
 
 set -euo pipefail
 
@@ -32,9 +37,20 @@ if [[ "$DOMAIN_DNS_CHECK" == "off" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
-if ! command -v dig > /dev/null; then
-  echo "ERROR: dig is required to check the DNS of '$DOMAIN_NAME' (bind-tools); set DOMAIN_DNS_CHECK=off to skip it" >&2
-  exit 1
+DNS_TOOL="${DNS_TOOL:-auto}"
+if [[ "$DNS_TOOL" == "auto" ]]; then
+  if command -v dig > /dev/null; then
+    DNS_TOOL=dig
+  elif command -v getent > /dev/null; then
+    DNS_TOOL=getent
+  else
+    DNS_TOOL=none
+  fi
+fi
+
+if [[ "$DNS_TOOL" == "none" ]]; then
+  echo "WARNING: neither dig nor getent is available: skipping the DNS check of '$DOMAIN_NAME'"
+  return 0 2>/dev/null || exit 0
 fi
 
 dns_problem() {
@@ -49,7 +65,9 @@ dns_problem() {
 # Public domains are checked against public resolvers; the first that replies wins.
 RESOLVER_ARGS=()
 RESOLVER_LABEL="the agent's resolver"
-if [[ "$VISIBILITY" == "public" ]]; then
+if [[ "$VISIBILITY" == "public" && "$DNS_TOOL" == "getent" ]]; then
+  echo "WARNING: dig is not available: checking '$DOMAIN_NAME' with the agent's resolver (getent), not a public one"
+elif [[ "$VISIBILITY" == "public" ]]; then
   for RESOLVER in ${PUBLIC_DNS_RESOLVERS:-1.1.1.1 8.8.8.8}; do
     if dig +time=3 +tries=1 +short "@$RESOLVER" . NS > /dev/null 2>&1; then
       RESOLVER_ARGS=("@$RESOLVER")
@@ -62,9 +80,14 @@ if [[ "$VISIBILITY" == "public" ]]; then
   fi
 fi
 
-# dig prints the CNAME chain followed by the addresses, one per line.
+# dig prints the CNAME chain followed by the addresses, one per line; getent
+# only the addresses.
 resolve() {
   local name="$1"
+  if [[ "$DNS_TOOL" == "getent" ]]; then
+    { getent ahosts "$name" 2>/dev/null || true; } | awk '{print $1}' | sort -u
+    return 0
+  fi
   {
     dig +time=3 +tries=2 +short ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} "$name" A
     dig +time=3 +tries=2 +short ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} "$name" AAAA
@@ -74,6 +97,11 @@ resolve() {
 echo "Checking DNS of '$DOMAIN_NAME' ($VISIBILITY) with $RESOLVER_LABEL..."
 
 ANSWER=$(resolve "$DOMAIN_NAME")
+
+if [[ -z "$ANSWER" && "$DNS_TOOL" == "getent" ]]; then
+  dns_problem "'$DOMAIN_NAME' doesn't resolve with the agent's resolver. Register the domain and create the record pointing at the gateway first."
+  return 0 2>/dev/null || exit 0
+fi
 
 if [[ -z "$ANSWER" ]]; then
   # The authority section names the closest existing zone, even on NXDOMAIN.
@@ -101,7 +129,11 @@ fi
 GATEWAY_TARGETS="$GATEWAY_ADDRESSES"
 while IFS= read -r ADDRESS; do
   [[ -z "$ADDRESS" || "$ADDRESS" =~ ^[0-9.:]+$ ]] && continue
-  GATEWAY_TARGETS+=$'\n'"$({ dig +time=3 +tries=2 +short "$ADDRESS" A 2>/dev/null || true; } | { grep -v '^;' || true; } | sed 's/\.$//')"
+  if [[ "$DNS_TOOL" == "getent" ]]; then
+    GATEWAY_TARGETS+=$'\n'"$(RESOLVER_ARGS=() resolve "$ADDRESS")"
+  else
+    GATEWAY_TARGETS+=$'\n'"$({ dig +time=3 +tries=2 +short "$ADDRESS" A 2>/dev/null || true; } | { grep -v '^;' || true; } | sed 's/\.$//')"
+  fi
 done <<< "$GATEWAY_ADDRESSES"
 
 if grep -qxFf <(echo "$GATEWAY_TARGETS" | sed '/^$/d') <<< "$ANSWER"; then
