@@ -54,13 +54,14 @@ fi
 echo "Scope $SCOPE_ID: active_deployment=${ACTIVE_DEPLOYMENT:-none} in_progress=${IN_PROGRESS_DEPLOYMENT:-none} status=${DEPLOYMENT_STATUS:-none} switched_traffic=$SWITCHED_TRAFFIC"
 
 # stderr stays out of the JSON (warnings used to corrupt it)
-# Additional ports get their own Services with the same selector: the main one
-# is named d-<scope_id>-<deployment_id>, so it sorts first.
+# Additional ports get their own Services with the same selector. The main one's
+# name ends with the deployment id (<app>-<scope>-<scope_id>-d-<deployment_id>),
+# so it sorts first.
 SERVICES_JSON=$(kubectl get services -n "$K8S_NAMESPACE" -o json \
   | jq --arg scope_id "$SCOPE_ID" "$PLATFORM_SERVICES_JQ"' platform_services
       | [.[] | select(.spec.selector.scope_id == $scope_id)
         | {name: .metadata.name, port: .spec.ports[0].port, deployment_id: .spec.selector.deployment_id}]
-      | sort_by(.name != "d-\($scope_id)-\(.deployment_id)")')
+      | sort_by([(.deployment_id as $d | .name | endswith($d) | not), (.name | length)])')
 
 service_for() {
   echo "$SERVICES_JSON" | jq -c --arg d "$1" 'first(.[] | select(.deployment_id == $d)) // empty'

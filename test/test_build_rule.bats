@@ -90,7 +90,7 @@ rule() { source "$SERVICE_PATH/scripts/istio/build_rule" >/dev/null; echo "$SCOP
 @test "build_rule: the deployment's main Service wins over its additional-port ones" {
   export IN_PROGRESS="" ACTIVE="1000"
   export K8S_SERVICES='{"items": [
-    {"metadata": {"name": "d-10-1000-http-9090"}, "spec": {"selector": {"nullplatform": "true", "scope_id": "10", "deployment_id": "1000"}, "ports": [{"port": 9090}]}},
+    {"metadata": {"name": "app-prod-10-d-1000-http-9090"}, "spec": {"selector": {"nullplatform": "true", "scope_id": "10", "deployment_id": "1000"}, "ports": [{"port": 9090}]}},
     {"metadata": {"name": "d-10-1000"},           "spec": {"selector": {"nullplatform": "true", "scope_id": "10", "deployment_id": "1000"}, "ports": [{"port": 8080}]}}
   ]}'
   [[ "$(rule '.')" == '{"service":{"name":"d-10-1000","port":{"number":8080}}}' ]]
