@@ -538,6 +538,17 @@ scope_env() {
   assert_output --partial '"scope":"pub"'
 }
 
+@test "build_link_context: without a scope, reads a Containers scope's string visibility" {
+  scope_env '[{"id": 1, "slug": "pub", "reachability": "public"}]'
+  jq -c '.results |= map(.capabilities.visibility = "public")' "$NP_SCOPE_LIST_FILE" > "$NP_SCOPE_LIST_FILE.tmp" \
+    && mv "$NP_SCOPE_LIST_FILE.tmp" "$NP_SCOPE_LIST_FILE"
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  assert_output --partial '"scope":"pub"'
+}
+
 @test "build_link_context: without a scope, a private service resolves the private scope" {
   scope_env '[{"id": 1, "slug": "pub", "reachability": "public"}, {"id": 2, "slug": "priv", "reachability": "account"}]'
   export NP_SERVICE_READ_FILE="$TEST_TEMP_DIR/service.json"

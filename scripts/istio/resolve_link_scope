@@ -42,7 +42,9 @@ CANDIDATES=$(echo "$APP_SCOPES" | jq -c \
   [.[]
    | select((.status // "") | IN("deleted", "deleting") | not)
    | select(. as $scope | $dims | to_entries | all(.value == ($scope.dimensions // {})[.key]))
-   | ((.capabilities.visibility.reachability // .service.attributes.visibility // "public") as $r
+   # Containers scopes keep visibility as a string ("public"); others as {reachability}.
+   | (((.capabilities.visibility | if type == "object" then .reachability else . end)
+       // .service.attributes.visibility // "public") as $r
       | if $r == "public" or $r == "external" then "public" else "private" end) as $scope_visibility
    | select($scope_visibility == $visibility)
    | select((.id | tostring) as $id | $routable | index($id))
