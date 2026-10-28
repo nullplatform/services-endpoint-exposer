@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Delete Link Resources: unlink removes exactly the HTTPRoute and AuthorizationPolicies
-# of this link; other links on the same domain are untouched.
+# of this link; other links on the same domain are untouched. The HTTPRoute goes
+# first: the other way round it would serve for a moment without its ALLOW policies.
 
 set -euo pipefail
 
@@ -14,6 +15,9 @@ LABELS="nullplatform.com/managed-by=http-route-access-control,nullplatform.com/l
 echo "Deleting HTTPRoute of link $LINK_ID in every namespace..."
 kubectl delete httproute --all-namespaces -l "$LABELS" --ignore-not-found
 
+# sync_gateway_baseline only stops excluding hosts that a run removed.
+kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" -l "$LABELS" -o json \
+  | jq -r '.items[].spec.rules[]?.to[]?.operation.hosts[]?' >> "$OUTPUT_DIR/.authz-removed-hosts" || true
 echo "Deleting AuthorizationPolicies of link $LINK_ID in $GATEWAY_NAMESPACE..."
 kubectl delete authorizationpolicy -n "$GATEWAY_NAMESPACE" -l "$LABELS" --ignore-not-found
 

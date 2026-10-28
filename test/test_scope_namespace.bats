@@ -57,10 +57,10 @@ EOF
   export PATH="$TEST_TEMP_DIR:$PATH"
 }
 
-# service <namespace> <scope_id> <name>
+# service <namespace> <scope_id> <name>: a Service the scope agent created
 service() {
   jq -n --arg ns "$1" --arg scope "$2" --arg name "$3" \
-    '{metadata: {name: $name, namespace: $ns}, spec: {selector: {scope_id: $scope}, ports: [{port: 8080}]}}'
+    '{metadata: {name: $name, namespace: $ns}, spec: {selector: {nullplatform: "true", scope_id: $scope, deployment_id: $name}, ports: [{port: 8080}]}}'
 }
 
 # httproute <namespace> <name>
@@ -228,4 +228,72 @@ EOF
   assert_success
   assert_output --partial "WARNING: could not list HTTPRoutes across namespaces"
   grep -q "kubectl get httproute exposer-svc-1-public -n nullplatform" "$KUBECTL_LOG"
+}
+
+# --- only the platform's Services are backends ---
+
+# echo_service <namespace> <scope_id> <name>: selects the scope_id but wasn't
+# created by the scope agent (no nullplatform label, no deployment_id)
+echo_service() {
+  jq -n --arg ns "$1" --arg scope "$2" --arg name "$3" \
+    '{metadata: {name: $name, namespace: $ns}, spec: {selector: {scope_id: $scope}, ports: [{port: 80}]}}'
+}
+
+build_link_httproute() {
+  export ROUTES_JSON="$1" LINK_ID="link-1" DOMAIN_NAME="api.example.com" GATEWAY_NAME="gateway-public"
+  run bash -c 'source "$SERVICE_PATH/scripts/istio/build_link_httproute"'
+}
+
+@test "resolve_scope_namespace: a Service the platform didn't create doesn't count" {
+  set_items "$KUBECTL_SERVICES" "$(service team-a 101 d-101-1)" "$(echo_service nullplatform 101 echo)"
+
+  run "$SERVICE_PATH/scripts/istio/resolve_scope_namespace" 101
+
+  assert_success
+  assert_output "team-a"
+}
+
+@test "build_link_httproute: a route whose scope has no platform Service is left out" {
+  set_items "$KUBECTL_SERVICES" "$(service nullplatform 101 d-101-1)" "$(echo_service nullplatform 202 echo)"
+
+  build_link_httproute '[{"path": "/web", "scope": "web", "methods": ["GET"]}, {"path": "/api", "scope": "api", "methods": ["GET"]}]'
+
+  assert_success
+  assert_output --partial "WARNING: route GET /api skipped: scope api has no backend"
+  FILE="$OUTPUT_DIR/httproute-link-link-1.yaml"
+  assert_yaml_contains "$FILE" '.spec.rules | length' "1"
+  assert_yaml_contains "$FILE" '.spec.rules[0].backendRefs[0].name' "d-101-1"
+  [[ "$(yq '[.spec.rules[].backendRefs[].name] | contains(["response-404"])' "$FILE")" == "false" ]]
+  [[ "$(yq '[.spec.rules[].backendRefs[].name] | contains(["echo"])' "$FILE")" == "false" ]]
+}
+
+@test "build_link_httproute: without any backend the link's HTTPRoute is removed, not left as a catch-all" {
+  set_items "$KUBECTL_SERVICES" "$(echo_service nullplatform 101 echo)"
+
+  build_link_httproute '[{"path": "/web", "scope": "web", "methods": ["ALL"]}]'
+
+  assert_success
+  assert_output --partial "no route of link link-1 has a backend"
+  assert_file_not_exists "$OUTPUT_DIR/httproute-link-link-1.yaml"
+  assert_file_exists "$OUTPUT_DIR/.httproute-link-deleted"
+}
+
+@test "apply: the link deletion marker removes the link's HTTPRoute wherever it is" {
+  touch "$OUTPUT_DIR/.httproute-link-deleted"
+
+  LINK_ID=link-1 ACTION=apply DRY_RUN=false run bash "$SERVICE_PATH/scripts/common/apply"
+
+  assert_success
+  grep -q "kubectl delete httproute --all-namespaces --ignore-not-found -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=link-1" "$KUBECTL_LOG"
+  assert_file_not_exists "$OUTPUT_DIR/.httproute-link-deleted"
+}
+
+@test "resolve_scope_namespace: a NAMESPACE_OVERRIDE the channel didn't interpolate is ignored" {
+  set_items "$KUBECTL_SERVICES" "$(service team-a 101 d-101-1)"
+
+  NAMESPACE_OVERRIDE='{context.tags.namespace}' run "$SERVICE_PATH/scripts/istio/resolve_scope_namespace" 101
+
+  assert_success
+  assert_output --partial "WARNING: ignoring NAMESPACE_OVERRIDE='{context.tags.namespace}'"
+  [[ "${lines[${#lines[@]}-1]}" == "team-a" ]]
 }

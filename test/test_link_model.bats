@@ -322,6 +322,50 @@ MOCK
   assert_output --partial "points at gateway"
 }
 
+# getent mock: "ahosts" answers from $DIG_DIR/<name>.A, in getent's format
+getent_env() {
+  cat > "$TEST_TEMP_DIR/getent" << 'MOCK'
+#!/bin/bash
+echo "getent $*" >> "$TEST_TEMP_DIR/getent.log"
+[[ -f "$DIG_DIR/$2.A" ]] || exit 2
+sed 's/$/ STREAM/' "$DIG_DIR/$2.A"
+MOCK
+  chmod +x "$TEST_TEMP_DIR/getent"
+}
+
+@test "check_domain_dns: without dig, getent checks the domain with the agent's resolver" {
+  dns_env public
+  getent_env
+  echo "10.0.0.9" > "$DIG_DIR/api.acme.com.A"
+  echo "10.0.0.9" > "$DIG_DIR/lb-123.elb.amazonaws.com.A"
+
+  DNS_TOOL=getent run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "dig is not available"
+  assert_output --partial "points at gateway gateways/gateway-public"
+  assert_file_not_exists "$TEST_TEMP_DIR/dig.log"
+}
+
+@test "check_domain_dns: without dig, a domain getent can't resolve still fails in enforce" {
+  dns_env public
+  getent_env
+
+  DNS_TOOL=getent run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_failure
+  assert_output --partial "doesn't resolve with the agent's resolver"
+}
+
+@test "check_domain_dns: without dig or getent it warns and skips, even in enforce" {
+  dns_env public
+
+  DNS_TOOL=none run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "WARNING: neither dig nor getent is available"
+}
+
 @test "build_link_context: builds a single route on the service's domain" {
   run_context_script build_link_context LINK_ID DOMAIN_NAME GATEWAY_NAME APPLICATION_ID ROUTES_JSON
 
@@ -475,7 +519,7 @@ scope_env() {
   jq -c '{results: [.[] | {id, slug, status: (.status // "active"), dimensions: {environment: "dev"},
     capabilities: {visibility: {reachability: .reachability}}}]}' <<< "$1" > "$NP_SCOPE_LIST_FILE"
   jq -c '{items: [.[] | select(.routable != false)
-    | {metadata: {namespace: (.namespace // "nullplatform")}, spec: {selector: {scope_id: (.id | tostring)}}}]}' \
+    | {metadata: {namespace: (.namespace // "nullplatform")}, spec: {selector: {nullplatform: "true", scope_id: (.id | tostring), deployment_id: "1"}}}]}' \
     <<< "$1" > "$KUBECTL_SERVICES_FILE"
   export CONTEXT="$(jq -c 'del(.parameters.scope) | del(.link.attributes.scope) | .link.scope = null' <<< "$CONTEXT")"
 }

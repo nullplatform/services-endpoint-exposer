@@ -10,12 +10,16 @@
 #   1. NAMESPACE_OVERRIDE, when set. This is the same source the scope agent
 #      uses to pick the namespace (e.g. "{context.tags.namespace}" on the
 #      channel), so both stay in sync when it is available.
-#   2. The namespace of the Services whose selector has scope_id=<scope_id>,
-#      searched across the whole cluster (needs cluster-wide list on services).
+#   2. The namespace of the platform's Services whose selector has
+#      scope_id=<scope_id> (PLATFORM_SERVICES_JQ in config), searched across the
+#      whole cluster (needs cluster-wide list on services). Other Services that
+#      select the scope_id don't count, so they can't make it ambiguous.
 #   3. K8S_NAMESPACE (default "nullplatform") when the scope has no Service yet
 #      or the cluster-wide list is not allowed, which is the previous behavior.
 
 set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
 
 SCOPE_ID="${1:?usage: resolve_scope_namespace <scope_id>}"
 DEFAULT_NAMESPACE="${K8S_NAMESPACE:-nullplatform}"
@@ -33,7 +37,7 @@ if ! ALL_SERVICES=$(kubectl get services --all-namespaces -o json 2>/dev/null); 
 fi
 
 NAMESPACES=$(echo "$ALL_SERVICES" | jq -r --arg scope_id "$SCOPE_ID" \
-  '[.items[]? | select(.spec.selector.scope_id == $scope_id) | .metadata.namespace] | unique | .[]')
+  "$PLATFORM_SERVICES_JQ"' platform_services | [.[] | select(.spec.selector.scope_id == $scope_id) | .metadata.namespace] | unique | .[]')
 
 case "$(echo -n "$NAMESPACES" | grep -c '^' || true)" in
   0)

@@ -193,6 +193,23 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   [[ $(grep -c "requestauthentication" "$CALLS_LOG") -eq 0 ]]
 }
 
+@test "manage_policies: none sync applies the policies in place and deletes only the stale ones" {
+  export AUTH_TYPE="none" ACTION="sync"
+  export CONTEXT=$(context update "$ROUTES_NO_GROUPS")
+  export SERVICE_ID="fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd" APPLICATION_ID="179976948"
+  export ROUTES_JSON="$ROUTES_NO_GROUPS"
+  export EXISTING_POLICIES="hrac-fbcf7a60-public-stale"
+
+  run bash "$SERVICE_PATH/scripts/common/manage_policies"
+
+  assert_success
+  local first_apply first_delete
+  first_apply=$(grep -n "kubectl apply -f" "$CALLS_LOG" | head -1 | cut -d: -f1)
+  first_delete=$(grep -n "kubectl delete authorizationpolicy" "$CALLS_LOG" | head -1 | cut -d: -f1)
+  [[ -n "$first_apply" && -n "$first_delete" && "$first_apply" -lt "$first_delete" ]]
+  grep -q "kubectl delete authorizationpolicy hrac-fbcf7a60-public-stale" "$CALLS_LOG"
+}
+
 @test "manage_policies: ALL renders a single policy without a methods filter" {
   export AUTH_TYPE="none" ACTION="apply"
   export CONTEXT=$(context create '[]')
