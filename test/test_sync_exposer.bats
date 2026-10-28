@@ -83,22 +83,22 @@ teardown() {
   assert_output --partial "Endpoint exposer one updated"
 }
 
-@test "sync_exposer: updates every active exposer of the deployed scope and skips the rest" {
+@test "sync_exposer: updates the active and failed exposers of the deployed scope and skips the rest" {
   export NP_SERVICES='[
     {"id":"svc-1","name":"one","specification_id":"spec-1","status":"active","attributes":{"routes":[{"scope":"prod"}]}},
     {"id":"svc-2","name":"two","specification_id":"spec-1","status":"active","attributes":{"routes":[{"scope":"other"},{"scope":"prod"}]}},
     {"id":"svc-3","name":"three","specification_id":"spec-1","status":"failed","attributes":{"routes":[{"scope":"prod"}]}},
-    {"id":"svc-4","name":"four","specification_id":"spec-1","status":"active","attributes":{"routes":[{"scope":"other"}]}}
+    {"id":"svc-4","name":"four","specification_id":"spec-1","status":"active","attributes":{"routes":[{"scope":"other"}]}},
+    {"id":"svc-5","name":"five","specification_id":"spec-1","status":"creating","attributes":{"routes":[{"scope":"prod"}]}}
   ]'
 
   run bash "$SCRIPT"
 
   assert_success
-  [[ "$(grep -c "service action create --serviceId svc-1" "$NP_CALLS")" -eq 1 ]]
-  [[ "$(grep -c "service action create --serviceId svc-2" "$NP_CALLS")" -eq 1 ]]
-  [[ "$(grep -c "service action create --serviceId svc-3" "$NP_CALLS")" -eq 0 ]]
-  [[ "$(grep -c "service action create --serviceId svc-4" "$NP_CALLS")" -eq 0 ]]
-  assert_output --partial "Skipping endpoint exposer three [svc-3] (status=failed)"
+  assert_output --partial "Skipping endpoint exposer five [svc-5] (status=creating)"
+  # [[ ]] does not fail a test under bash 3.2, so the counts go through run + assert.
+  run bash -c "grep -o 'service action create --serviceId svc-[0-9]' '$NP_CALLS' | sort | tr '\n' ' '"
+  assert_output "service action create --serviceId svc-1 service action create --serviceId svc-2 service action create --serviceId svc-3 "
 }
 
 @test "sync_exposer: nothing to do when no exposer routes to the deployed scope" {
@@ -218,4 +218,27 @@ domain_model() {
   assert_success
   body=$(grep "link action create --linkId link-1" "$NP_CALLS" | sed 's/.*--body //; s/ --format json$//')
   [[ "$(jq -c '.parameters' <<< "$body")" == '{"routes":[{"path":"/prueba","methods":["ALL"],"scope":"prod","groups":[]}]}' ]]
+}
+
+@test "sync_exposer: a failed link is synced with its stored routes, so its route follows the deploy" {
+  # A link update refused by a conflict leaves the link failed with its previous routes.
+  export NP_SERVICES='[{"id":"svc-d","name":"api","specification_id":"spec-1","status":"active","attributes":{"domain_name":"api.acme.com","visibility":"public"}}]'
+  export NP_LINKS='[{"id":"link-1","name":"one","service_id":"svc-d","specification_id":"ls-1","status":"failed","attributes":{"routes":[{"path":"/a","scope":"prod"}]}}]'
+
+  run bash "$SCRIPT"
+
+  assert_success
+  grep -q "link action create --linkId link-1" "$NP_CALLS"
+  grep "link action create --linkId link-1" "$NP_CALLS" | grep -q '"path":"/a"'
+}
+
+@test "sync_exposer: a failed link whose update fails again is reported, not the deploy step" {
+  export NP_ACTION_STATUS="failed"
+  export NP_SERVICES='[{"id":"svc-d","name":"api","specification_id":"spec-1","status":"active","attributes":{"domain_name":"api.acme.com","visibility":"public"}}]'
+  export NP_LINKS='[{"id":"link-1","name":"one","service_id":"svc-d","specification_id":"ls-1","status":"failed","attributes":{"routes":[{"path":"/a","scope":"prod"}]}}]'
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "WARNING: could not update endpoint exposer(s) that were already failed: link one [link-1]"
 }
