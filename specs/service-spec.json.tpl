@@ -1,5 +1,5 @@
 {
-    "name": "HTTP Route Access Control",
+    "name": "Endpoint Exposer",
     "slug": "http-route-access-control",
     "type": "dependency",
     "visible_to": ["{{ env.Getenv `NRN` }}"],
@@ -120,9 +120,9 @@
         "values": {}
     },
     "selectors": {
-        "category": "Security",
+        "category": "Networking",
         "imported": false,
         "provider": "Istio",
-        "sub_category": "Access Control"
+        "sub_category": "Endpoint Exposure"
     }
 }

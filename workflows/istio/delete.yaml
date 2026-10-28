@@ -21,6 +21,9 @@ steps:
   - name: "delete service resources"
     type: script
     file: "$SERVICE_PATH/scripts/istio/delete_service_resources"
+  - name: "sync gateway baseline"
+    type: script
+    file: "$SERVICE_PATH/scripts/istio/sync_gateway_baseline"
   - name: "delete request authentication"
     type: script
     file: "$SERVICE_PATH/scripts/istio/delete_request_authentication"

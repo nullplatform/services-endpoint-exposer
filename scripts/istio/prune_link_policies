@@ -24,6 +24,9 @@ EXISTING=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" \
 while IFS= read -r POLICY_NAME; do
   [[ -z "$POLICY_NAME" ]] && continue
   if ! grep -qxF "$POLICY_NAME" <<< "$GENERATED"; then
+    # sync_gateway_baseline only stops excluding hosts that a run removed.
+    kubectl get authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE" -o json \
+      | jq -r '.spec.rules[]?.to[]?.operation.hosts[]?' >> "$OUTPUT_DIR/.authz-removed-hosts" || true
     kubectl delete authorizationpolicy "$POLICY_NAME" -n "$GATEWAY_NAMESPACE" --ignore-not-found
     echo "🧹 Deleted stale AuthorizationPolicy: $POLICY_NAME"
   fi

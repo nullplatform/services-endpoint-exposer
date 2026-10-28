@@ -9,7 +9,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo "================================================"
-echo "  HTTP Route Access Control Test Suite"
+echo "  Endpoint Exposer Test Suite"
 echo "================================================"
 echo ""
 
@@ -48,6 +48,10 @@ TEST_FILES=(
   "test_authorization_policy.bats"
   "test_apply_cleanup.bats"
   "test_scope_namespace.bats"
+  "test_gateway_baseline.bats"
+  "test_build_rule.bats"
+  "test_sync_exposer.bats"
+  "test_replace_allow_policies.bats"
   "test_integration.bats"
   "test_link_model.bats"
 )
