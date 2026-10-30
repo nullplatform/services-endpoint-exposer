@@ -30,7 +30,9 @@ if [[ " $* " == *" --specification-id "* ]]; then echo "Error: unknown flag: --s
 [[ -n "${NP_FAIL:-}" && "$*" == "$NP_FAIL"* ]] && exit 1
 case "$*" in
   "service specification action specification list"*)
-    echo "{\"results\":[{\"id\":\"action-spec-1\",\"slug\":\"update-$NP_SPEC_SLUG\"}]}" ;;
+    # NP_NO_ACTION_SPECS: what an api key that can't see the actions gets back.
+    if [[ -n "${NP_NO_ACTION_SPECS:-}" ]]; then echo '{"results":null}'; else
+    echo "{\"results\":[{\"id\":\"action-spec-1\",\"slug\":\"update-$NP_SPEC_SLUG\"}]}"; fi ;;
   "service specification list"*)
     echo "{\"results\":[{\"id\":\"spec-1\",\"slug\":\"$NP_SPEC_SLUG\"}]}" ;;
   "service list"*)
@@ -241,4 +243,39 @@ domain_model() {
 
   assert_success
   assert_output --partial "WARNING: could not update endpoint exposer(s) that were already failed: link one [link-1]"
+}
+
+@test "sync_exposer: an app without exposers deploys even when the update action isn't visible" {
+  export NP_SERVICES='[]'
+  export NP_NO_ACTION_SPECS=1
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "No endpoint exposer routes to this scope, skipping exposer sync"
+  run grep -c "service specification action specification list" "$NP_CALLS"
+  assert_output "0"
+}
+
+@test "sync_exposer: links sync without the service's update action" {
+  export NP_SERVICES='[{"id":"dom-1","name":"domain","specification_id":"spec-1","status":"active","attributes":{"domain_name":"api.example.com"}}]'
+  export NP_LINKS='[{"id":"link-1","name":"app","service_id":"dom-1","specification_id":"link-spec-1","status":"active","attributes":{"routes":[{"path":"/a","methods":["GET"],"scope":"prod"}]}}]'
+  export NP_NO_ACTION_SPECS=1
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "sync_exposer completed"
+  run grep -c "link action create" "$NP_CALLS"
+  assert_output "1"
+}
+
+@test "sync_exposer: an active legacy exposer without a visible update action fails the deploy step" {
+  export NP_NO_ACTION_SPECS=1
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "No action specification 'update-http-route-access-control' visible"
+  assert_output --partial "Could not update endpoint exposer(s): one [svc-1]"
 }
