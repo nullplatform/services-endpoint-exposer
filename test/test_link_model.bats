@@ -975,11 +975,13 @@ conflict_env() {
 
 # --- service spec --------------------------------------------------------------
 
-@test "service spec: domain_name is required, so the form refuses an empty domain" {
-  # The UI validates the create (and update) form against the spec's required list;
-  # without it an empty domain reached the agent and failed there.
-  run bash -c "sed 's/{{[^}]*}}/x/g' \"$SERVICE_PATH/specs/service-spec.json.tpl\" | jq -c '.attributes.schema.required'"
+@test "service spec: a domain service needs domain_name, a legacy one its routes" {
+  # The UI validates the create and update forms against the spec's schema, and the
+  # platform copies it to the default update action: an empty domain must be refused
+  # in the form, while sync_exposer's update of a legacy service ({routes} only)
+  # must still pass.
+  run bash -c "sed 's/{{[^}]*}}/x/g' \"$SERVICE_PATH/specs/service-spec.json.tpl\" | jq -c '.attributes.schema | {required, anyOf}'"
 
   assert_success
-  assert_output '["domain_name"]'
+  assert_output '{"required":[],"anyOf":[{"required":["domain_name"]},{"required":["routes"]}]}'
 }
