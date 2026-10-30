@@ -343,3 +343,33 @@ build_link_httproute() {
   assert_output --partial "ERROR: could not read: forbidden"
   [[ "$output" != *"(none found)"* ]]
 }
+
+# --- legacy HTTPRoute passes ------------------------------------------------------
+
+@test "build_httproute: without any backend the legacy HTTPRoute is removed, not left as a catch-all" {
+  set_items "$KUBECTL_SERVICES" "$(echo_service nullplatform 101 echo)"
+
+  build_public_httproute '[{"path": "/", "scope": "web", "methods": ["GET"]}]'
+
+  assert_success
+  assert_output --partial "no public route has a backend"
+  assert_file_not_exists "$OUTPUT_DIR/httproute-svc-1-public.yaml"
+  assert_file_exists "$OUTPUT_DIR/.httproute-public-deleted"
+}
+
+@test "build_httproute: the private pass doesn't inherit the public pass's namespace" {
+  # Both passes run in one shell. web (101) runs in team-a; api (202) has no Service
+  # yet, so its HTTPRoute belongs in the default namespace, not in team-a.
+  set_items "$KUBECTL_SERVICES" "$(service team-a 101 d-101-1)"
+  export ROUTES_JSON='[{"path": "/", "scope": "web", "methods": ["GET"]}, {"path": "/api", "scope": "api", "methods": ["GET"]}]'
+  export PUBLIC_ROUTES_JSON='[{"path": "/", "scope": "web", "methods": ["GET"]}]'
+  export PRIVATE_ROUTES_JSON='[{"path": "/api", "scope": "api", "methods": ["GET"]}]'
+
+  run bash -c '
+    export VISIBILITY=public; source "$SERVICE_PATH/scripts/istio/build_httproute"
+    export VISIBILITY=private; source "$SERVICE_PATH/scripts/istio/build_httproute"'
+
+  assert_success
+  assert_output --partial "public HTTPRoute namespace: team-a"
+  assert_output --partial "private HTTPRoute namespace: nullplatform"
+}
