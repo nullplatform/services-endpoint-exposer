@@ -239,6 +239,11 @@ if [[ "$name" == "." ]]; then
   [[ -n "${DIG_RESOLVERS_DOWN:-}" ]] && exit 9
   echo "a.root-servers.net."; exit 0
 fi
+# DIG_UNREACHABLE: no server answers (dig prints the reason and exits 9)
+if [[ -n "${DIG_UNREACHABLE:-}" ]]; then
+  echo ";; connection timed out; no servers could be reached"
+  exit 9
+fi
 if $auth; then cat "$DIG_DIR/$name.AUTH" 2>/dev/null; exit 0; fi
 cat "$DIG_DIR/$name.$type" 2>/dev/null
 exit 0
@@ -984,4 +989,40 @@ conflict_env() {
 
   assert_success
   assert_output '{"required":[],"anyOf":[{"required":["domain_name"]},{"required":["routes"]}]}'
+}
+
+# --- check_domain_dns: unreachable resolvers --------------------------------------
+
+@test "check_domain_dns: an unreachable resolver is reported, not taken for a missing domain" {
+  dns_env public
+
+  DIG_UNREACHABLE=1 run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_failure
+  assert_output --partial "ERROR: could not query the A records of 'api.acme.com'"
+  assert_output --partial "dig exit 9"
+  [[ "$output" != *"doesn't exist in DNS"* ]]
+}
+
+@test "check_domain_dns: with DOMAIN_DNS_CHECK=warn an unreachable resolver only warns" {
+  dns_env public
+
+  DOMAIN_DNS_CHECK=warn DIG_UNREACHABLE=1 run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "WARNING: could not query the A records of 'api.acme.com'"
+}
+
+@test "check_domain_dns: the gateway's hostname is resolved with the agent's resolver" {
+  dns_env public
+  echo "10.0.0.9" > "$DIG_DIR/api.acme.com.A"
+  echo "10.0.0.9" > "$DIG_DIR/lb-123.elb.amazonaws.com.A"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "points at gateway gateways/gateway-public"
+  # No public resolver, and no stray "()" argument
+  run grep "lb-123.elb.amazonaws.com A" "$TEST_TEMP_DIR/dig.log"
+  [[ "$output" != *"@"* && "$output" != *"()"* ]]
 }
