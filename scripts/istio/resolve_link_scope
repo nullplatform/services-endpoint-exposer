@@ -7,13 +7,14 @@
 # context), so the scope is resolved from the service's visibility instead: the
 # application's scope in the link's dimensions whose visibility matches (public →
 # reachability public / visibility external, private → anything else) and that has
-# a Kubernetes Service to route to. A single active match (or a single match) is
-# used, logged and stored on the link (update_link_results). Several active matches
-# fail and ask for the scope on the link: guessing could route to the wrong one.
-# No match fails.
+# a Kubernetes Service to route to. A single active match is used, even next to
+# inactive ones; with no active match, a single inactive one is used. It is logged and
+# stored on the link (update_link_results). Several active matches, or several
+# inactive ones and no active one, fail and ask for the scope on the link: guessing
+# could route to the wrong one. No match fails.
 #
 # Sourced by build_link_context.
-# Required: CONTEXT, APPLICATION_ID, VISIBILITY (public|private), K8S_NAMESPACE
+# Required: CONTEXT, APPLICATION_ID, VISIBILITY (public|private)
 # Sets: ROUTE_SCOPE, APP_SCOPES
 
 LINK_DIMENSIONS=$(echo "$CONTEXT" | jq -c '.link.dimensions // {}')
@@ -23,14 +24,8 @@ echo "Resolving the $VISIBILITY scope of application $APPLICATION_ID for dimensi
 APP_SCOPES=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq -c '.results // []')
 
 # The application may run in its own namespace, so its Services are looked up across
-# the cluster; without cluster-wide list, only K8S_NAMESPACE (the previous behavior).
-if ! K8S_SERVICES=$(kubectl get services --all-namespaces -o json 2>/dev/null); then
-  echo "WARNING: could not list Services across namespaces; looking only in $K8S_NAMESPACE"
-  if ! K8S_SERVICES=$(kubectl get services -n "$K8S_NAMESPACE" -o json 2>&1); then
-    echo "ERROR: could not list Services in $K8S_NAMESPACE: $K8S_SERVICES" >&2
-    exit 1
-  fi
-fi
+# the cluster (list_cluster_wide in config fails rather than look at a single one).
+K8S_SERVICES=$(list_cluster_wide services) || exit 1
 # Only the platform's Services make a scope routable (PLATFORM_SERVICES_JQ in config).
 ROUTABLE_SCOPE_IDS=$(echo "$K8S_SERVICES" | jq -c "$PLATFORM_SERVICES_JQ"' platform_services | [.[].spec.selector.scope_id] | unique')
 

@@ -31,6 +31,9 @@ setup() {
 #!/bin/bash
 echo "kubectl $*" >> "$KUBECTL_LOG"
 [[ "$1" == "get" && -n "${KUBECTL_FAIL_LIST:-}" ]] && { echo "forbidden" >&2; exit 1; }
+[[ "$1" == "delete" && -n "${KUBECTL_FAIL_DELETE:-}" ]] && { echo "forbidden" >&2; exit 1; }
+# KUBECTL_FAIL_ALL_NAMESPACES: cluster-wide reads are forbidden, namespaced ones work
+[[ "$1" == "get" && -n "${KUBECTL_FAIL_ALL_NAMESPACES:-}" && " $* " == *" --all-namespaces "* ]] && { echo "forbidden" >&2; exit 1; }
 if [[ "$1" == "get" ]]; then
   case "$2" in
     services) file="$KUBECTL_SERVICES" ;;
@@ -126,12 +129,14 @@ build_public_httproute() {
   assert_output "nullplatform"
 }
 
-@test "resolve_scope_namespace: falls back to K8S_NAMESPACE when the cluster-wide list is forbidden" {
+@test "resolve_scope_namespace: fails with kubectl's error when the cluster-wide list is forbidden" {
+  # Falling back to K8S_NAMESPACE would find no Service there, and the scope's
+  # routes would be removed.
   KUBECTL_FAIL_LIST=1 run "$SERVICE_PATH/scripts/istio/resolve_scope_namespace" 101
 
-  assert_success
-  assert_output --partial "WARNING: could not list Services across namespaces"
-  [[ "${lines[${#lines[@]}-1]}" == "nullplatform" ]]
+  assert_failure
+  assert_output --partial "ERROR: could not list services across namespaces: forbidden"
+  [[ "${lines[${#lines[@]}-1]}" != "nullplatform" ]]
 }
 
 @test "resolve_scope_namespace: fails when the scope has Services in two namespaces" {
@@ -220,14 +225,14 @@ EOF
   refute_kubectl_call "kubectl delete httproute exposer-svc-1-public -n team-a"
 }
 
-@test "apply: without cluster-wide list, deletes in K8S_NAMESPACE as before" {
+@test "apply: without cluster-wide list, fails instead of deleting in a single namespace" {
   touch "$OUTPUT_DIR/.httproute-public-deleted"
 
   KUBECTL_FAIL_LIST=1 ACTION=apply DRY_RUN=false run bash "$SERVICE_PATH/scripts/common/apply"
 
-  assert_success
-  assert_output --partial "WARNING: could not list HTTPRoutes across namespaces"
-  grep -q "kubectl get httproute exposer-svc-1-public -n nullplatform" "$KUBECTL_LOG"
+  assert_failure
+  assert_output --partial "ERROR: could not list httproute across namespaces: forbidden"
+  refute_kubectl_call "kubectl delete httproute"
 }
 
 # --- only the platform's Services are backends ---
@@ -284,7 +289,7 @@ build_link_httproute() {
   LINK_ID=link-1 ACTION=apply DRY_RUN=false run bash "$SERVICE_PATH/scripts/common/apply"
 
   assert_success
-  grep -q "kubectl delete httproute --all-namespaces --ignore-not-found -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=link-1" "$KUBECTL_LOG"
+  grep -q "kubectl delete httproute --all-namespaces -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=link-1 --ignore-not-found" "$KUBECTL_LOG"
   assert_file_not_exists "$OUTPUT_DIR/.httproute-link-deleted"
 }
 
@@ -296,4 +301,45 @@ build_link_httproute() {
   assert_success
   assert_output --partial "WARNING: ignoring NAMESPACE_OVERRIDE='{context.tags.namespace}'"
   [[ "${lines[${#lines[@]}-1]}" == "team-a" ]]
+}
+
+# --- missing cluster-wide access fails ---------------------------------------------
+
+@test "build_httproute: a failed cluster-wide Service list fails, it doesn't remove the route" {
+  # The scope's Service is in team-a, but the agent can't see it: the route must
+  # not be dropped from (or the HTTPRoute deleted in) the default namespace.
+  set_items "$KUBECTL_SERVICES" "$(service team-a 101 d-101-1)"
+
+  KUBECTL_FAIL_ALL_NAMESPACES=1 build_public_httproute '[{"path": "/", "scope": "web", "methods": ["GET"]}]'
+
+  assert_failure
+  assert_output --partial "ERROR: could not list services across namespaces: forbidden"
+  assert_file_not_exists "$OUTPUT_DIR/.httproute-public-deleted"
+  assert_file_not_exists "$OUTPUT_DIR/httproute-svc-1-public.yaml"
+}
+
+@test "build_httproute: a failed Service list in the namespace fails with kubectl's error" {
+  set_items "$KUBECTL_SERVICES" "$(service team-b 101 d-101-1)"
+
+  NAMESPACE_OVERRIDE=team-b KUBECTL_FAIL_LIST=1 build_public_httproute '[{"path": "/", "scope": "web", "methods": ["GET"]}]'
+
+  assert_failure
+  assert_output --partial "ERROR: could not list Services in namespace team-b: forbidden"
+  assert_file_not_exists "$OUTPUT_DIR/.httproute-public-deleted"
+}
+
+@test "delete_httproutes: without cluster-wide delete, fails instead of deleting in one namespace" {
+  KUBECTL_FAIL_DELETE=1 run bash "$SERVICE_PATH/scripts/istio/delete_httproutes"
+
+  assert_failure
+  assert_output --partial "ERROR: could not delete httproute (nullplatform.com/service-id=svc-1) across namespaces"
+  refute_kubectl_call "kubectl delete httproute -n"
+}
+
+@test "read_ingress: a kubectl error is reported, not shown as none found" {
+  KUBECTL_FAIL_LIST=1 run bash "$SERVICE_PATH/scripts/istio/read_ingress"
+
+  assert_success
+  assert_output --partial "ERROR: could not read: forbidden"
+  [[ "$output" != *"(none found)"* ]]
 }

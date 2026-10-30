@@ -51,10 +51,22 @@ EOF
   cat > "$TEST_TEMP_DIR/kubectl" << 'EOF'
 #!/bin/bash
 echo "kubectl $*" >> "$TEST_TEMP_DIR/kubectl.log"
+# KUBECTL_FAIL_ALL_NAMESPACES: cluster-wide reads are forbidden, namespaced ones work
+if [[ "$1" == "get" && -n "${KUBECTL_FAIL_ALL_NAMESPACES:-}" && " $* " == *" --all-namespaces "* ]]; then
+  echo "forbidden: cannot list resource at the cluster scope" >&2
+  exit 1
+fi
 case "$1 $2" in
   "get gateway")             cat "$KUBECTL_GATEWAY_FILE" ;;
   "get httproute")           cat "$KUBECTL_HTTPROUTES_FILE" ;;
-  "get authorizationpolicy") cat "$KUBECTL_AUTHZ_NAMES_FILE" ;;
+  "get authorizationpolicy")
+    # By label as JSON: the policies a delete removes (KUBECTL_AUTHZ_JSON_FILE)
+    if [[ " $* " == *" -l "*" -o json "* ]]; then
+      [[ -n "${KUBECTL_FAIL_AUTHZ:-}" ]] && { echo "connection refused" >&2; exit 1; }
+      if [[ -n "${KUBECTL_AUTHZ_JSON_FILE:-}" ]]; then cat "$KUBECTL_AUTHZ_JSON_FILE"; else echo '{"items": []}'; fi
+    else
+      cat "$KUBECTL_AUTHZ_NAMES_FILE"
+    fi ;;
   "get services")            cat "$KUBECTL_SERVICES_FILE" ;;
 esac
 EOF
@@ -88,10 +100,12 @@ service_context() {
 }
 
 httproute_items() {
-  # $1: JSON array of {name, link_id, host, path, method, service_id (default svc-1234)}
+  # $1: JSON array of {name, link_id, host, path, method, service_id (default svc-1234),
+  # namespace (default nullplatform)}
   jq -c '{items: [.[] | {
     metadata: {
       name: .name,
+      namespace: (.namespace // "nullplatform"),
       labels: ({"nullplatform.com/managed-by": "http-route-access-control",
                 "nullplatform.com/service-id": (.service_id // "svc-1234")}
         + (if .link_id then {"nullplatform.com/link-id": .link_id} else {} end))
@@ -1025,4 +1039,105 @@ conflict_env() {
   # No public resolver, and no stray "()" argument
   run grep "lb-123.elb.amazonaws.com A" "$TEST_TEMP_DIR/dig.log"
   [[ "$output" != *"@"* && "$output" != *"()"* ]]
+}
+
+# --- missing cluster-wide access fails ---------------------------------------------
+
+@test "delete_link_resources: records the removed hosts before deleting anything" {
+  export LINK_ID=link-5678 KUBECTL_AUTHZ_JSON_FILE="$TEST_TEMP_DIR/authz.json"
+  jq -n '{items: [{spec: {rules: [{to: [{operation: {hosts: ["api.acme.com"]}}]}]}}]}' > "$KUBECTL_AUTHZ_JSON_FILE"
+
+  run bash "$SERVICE_PATH/scripts/istio/delete_link_resources"
+
+  assert_success
+  assert_file_contains "$OUTPUT_DIR/.authz-removed-hosts" "api.acme.com"
+}
+
+@test "delete_link_resources: a failed read of the hosts aborts before any delete" {
+  # Losing the hosts would leave the gateway baseline excluding them for good.
+  export LINK_ID=link-5678 KUBECTL_FAIL_AUTHZ=1
+
+  run bash "$SERVICE_PATH/scripts/istio/delete_link_resources"
+
+  assert_failure
+  assert_file_not_contains "$TEST_TEMP_DIR/kubectl.log" "delete"
+}
+
+@test "delete_service_resources: a failed read of the hosts aborts before any delete" {
+  export SERVICE_ID=svc-1234 KUBECTL_FAIL_AUTHZ=1
+
+  run bash "$SERVICE_PATH/scripts/istio/delete_service_resources"
+
+  assert_failure
+  assert_file_not_contains "$TEST_TEMP_DIR/kubectl.log" "delete"
+}
+
+@test "check_link_conflict: fails with kubectl's error when HTTPRoutes can't be listed across namespaces" {
+  conflict_env "/api/users" '["GET"]'
+  echo '{"items": []}' > "$KUBECTL_HTTPROUTES_FILE"
+
+  KUBECTL_FAIL_ALL_NAMESPACES=1 run bash "$SERVICE_PATH/scripts/istio/check_link_conflict"
+
+  assert_failure
+  assert_output --partial "ERROR: could not list httproute across namespaces: forbidden"
+}
+
+@test "check_link_conflict: a link in another namespace claiming the same path conflicts" {
+  conflict_env "/api/users" '["GET"]'
+  httproute_items '[{"name": "r1", "link_id": "link-other", "host": "api.acme.com", "path": "/api/users", "method": "GET", "namespace": "team-b"}]' > "$KUBECTL_HTTPROUTES_FILE"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_link_conflict"
+
+  assert_failure
+  assert_output --partial "already exposed by link link-other"
+}
+
+@test "validate_domain: fails with kubectl's error when HTTPRoutes can't be listed across namespaces" {
+  export KUBECTL_GATEWAY_FILE="$TEST_TEMP_DIR/gateway.json" KUBECTL_HTTPROUTES_FILE="$TEST_TEMP_DIR/httproutes.json"
+  export GATEWAY_NAME=gateway-public SERVICE_ID=svc-1234
+  jq -n '{spec: {listeners: [{hostname: "*.acme.com"}]}}' > "$KUBECTL_GATEWAY_FILE"
+
+  DOMAIN_NAME=api.acme.com KUBECTL_FAIL_ALL_NAMESPACES=1 run bash "$SERVICE_PATH/scripts/istio/validate_domain"
+
+  assert_failure
+  assert_output --partial "ERROR: could not list httproute across namespaces: forbidden"
+}
+
+@test "build_link_context: without cluster-wide list on Services, a link without a scope fails" {
+  # It used to fall back to the default namespace, which could pick a scope (or
+  # none) from a partial view.
+  scope_env '[{"id": 1, "slug": "pub", "reachability": "public", "namespace": "team-a"}]'
+
+  KUBECTL_FAIL_ALL_NAMESPACES=1 run_context_script build_link_context ROUTES_JSON
+
+  assert_failure
+  assert_output --partial "ERROR: could not list services across namespaces: forbidden"
+  assert_file_not_contains "$TEST_TEMP_DIR/kubectl.log" "get services -n"
+}
+
+@test "build_link_context: without cluster-wide list on Services, a link with a scope fails" {
+  # The scope's namespace can't be resolved: guessing the default one would find no
+  # Service there and remove a route that works.
+  echo '{"results": [{"id": 7, "slug": "users-prod", "status": "active", "dimensions": {"environment": "dev"}}]}' > "$NP_SCOPE_LIST_FILE"
+
+  KUBECTL_FAIL_ALL_NAMESPACES=1 run_context_script build_link_context K8S_NAMESPACE
+
+  assert_failure
+  assert_output --partial "ERROR: could not list services across namespaces: forbidden"
+}
+
+@test "build_link_context: a NAMESPACE_OVERRIDE the channel didn't interpolate is ignored" {
+  NAMESPACE_OVERRIDE='{context.tags.namespace}' run_context_script build_link_context K8S_NAMESPACE
+
+  assert_success
+  assert_output --partial "K8S_NAMESPACE=nullplatform"
+}
+
+@test "build_service_context: a NAMESPACE_OVERRIDE the channel didn't interpolate is ignored" {
+  export CONTEXT="$(service_context '{"domain_name": "api.acme.com", "visibility": "public"}')"
+
+  NAMESPACE_OVERRIDE='{context.tags.namespace}' run_context_script build_service_context K8S_NAMESPACE
+
+  assert_success
+  assert_output --partial "K8S_NAMESPACE=nullplatform"
 }

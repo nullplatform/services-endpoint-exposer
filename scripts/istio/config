@@ -23,6 +23,40 @@ export COGNITO_TOKEN_COOKIE_NAME="${COGNITO_TOKEN_COOKIE_NAME:-}"
 # backend. Usage: jq "$PLATFORM_SERVICES_JQ"' platform_services | ...'
 export PLATFORM_SERVICES_JQ='def platform_services: [.items[]? | select(.spec.selector.nullplatform == "true" and (.spec.selector.scope_id // "") != "" and (.spec.selector.deployment_id // "") != "")];'
 
+# Applications run in their own namespaces, so the exposer reads and deletes
+# Services and HTTPRoutes across the cluster (README: "Applications in their own
+# namespaces"). Missing cluster-wide access is never worked around with a single
+# namespace: a partial view could miss a backend and remove a route that works, or
+# miss a conflict. Every cluster-wide call fails with kubectl's error instead.
+
+# list_cluster_wide <resource> [kubectl get args...]: prints the JSON list of
+# <resource> in every namespace. kubectl's stderr stays out of the JSON and goes
+# into the error message.
+list_cluster_wide() {
+  local resource="$1" err out
+  shift
+  err=$(mktemp)
+  if ! out=$(kubectl get "$resource" --all-namespaces -o json "$@" 2>"$err"); then
+    echo "ERROR: could not list $resource across namespaces: $(cat "$err")" >&2
+    echo "The agent needs cluster-wide list on services and httproutes (README: RBAC)." >&2
+    rm -f "$err"
+    return 1
+  fi
+  rm -f "$err"
+  echo "$out"
+}
+
+# delete_cluster_wide <resource> <label selector>: deletes every <resource> that
+# matches the selector, in every namespace.
+delete_cluster_wide() {
+  local resource="$1" selector="$2"
+  if ! kubectl delete "$resource" --all-namespaces -l "$selector" --ignore-not-found; then
+    echo "ERROR: could not delete $resource ($selector) across namespaces." >&2
+    echo "The agent needs cluster-wide delete on httproutes (README: RBAC)." >&2
+    return 1
+  fi
+}
+
 # NAMESPACE_OVERRIDE set on the channel as a template (e.g.
 # "{context.tags.namespace}") reaches the agent literally when the channel
 # doesn't interpolate it. That isn't a namespace: ignore it, so the namespace is
