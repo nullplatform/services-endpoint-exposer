@@ -7,15 +7,14 @@
 # context), so the scope is resolved from the service's visibility instead: the
 # application's scope in the link's dimensions whose visibility matches (public →
 # reachability public / visibility external, private → anything else) and that has
-# a Kubernetes Service to route to. With several matches the pick is deterministic,
-# never "whatever the API listed first": active scopes first, then the oldest. It is
-# logged with the other candidates and stored on the link (update_link_results), so
-# the developer sees which scope serves the path and can name another one.
+# a Kubernetes Service to route to. A single active match (or a single match) is
+# used, logged and stored on the link (update_link_results). Several active matches
+# fail and ask for the scope on the link: guessing could route to the wrong one.
 # No match fails.
 #
 # Sourced by build_link_context.
 # Required: CONTEXT, APPLICATION_ID, VISIBILITY (public|private), K8S_NAMESPACE
-# Sets: ROUTE_SCOPE
+# Sets: ROUTE_SCOPE, APP_SCOPES
 
 LINK_DIMENSIONS=$(echo "$CONTEXT" | jq -c '.link.dimensions // {}')
 
@@ -23,11 +22,17 @@ echo "Resolving the $VISIBILITY scope of application $APPLICATION_ID for dimensi
 
 APP_SCOPES=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq -c '.results // []')
 
-if ! K8S_SERVICES=$(kubectl get services -n "$K8S_NAMESPACE" -o json 2>&1); then
-  echo "ERROR: could not list Services in $K8S_NAMESPACE: $K8S_SERVICES" >&2
-  exit 1
+# The application may run in its own namespace, so its Services are looked up across
+# the cluster; without cluster-wide list, only K8S_NAMESPACE (the previous behavior).
+if ! K8S_SERVICES=$(kubectl get services --all-namespaces -o json 2>/dev/null); then
+  echo "WARNING: could not list Services across namespaces; looking only in $K8S_NAMESPACE"
+  if ! K8S_SERVICES=$(kubectl get services -n "$K8S_NAMESPACE" -o json 2>&1); then
+    echo "ERROR: could not list Services in $K8S_NAMESPACE: $K8S_SERVICES" >&2
+    exit 1
+  fi
 fi
-ROUTABLE_SCOPE_IDS=$(echo "$K8S_SERVICES" | jq -c '[.items[].spec.selector.scope_id // empty] | unique')
+# Only the platform's Services make a scope routable (PLATFORM_SERVICES_JQ in config).
+ROUTABLE_SCOPE_IDS=$(echo "$K8S_SERVICES" | jq -c "$PLATFORM_SERVICES_JQ"' platform_services | [.[].spec.selector.scope_id] | unique')
 
 CANDIDATES=$(echo "$APP_SCOPES" | jq -c \
   --argjson dims "$LINK_DIMENSIONS" \
@@ -36,7 +41,9 @@ CANDIDATES=$(echo "$APP_SCOPES" | jq -c \
   [.[]
    | select((.status // "") | IN("deleted", "deleting") | not)
    | select(. as $scope | $dims | to_entries | all(.value == ($scope.dimensions // {})[.key]))
-   | ((.capabilities.visibility.reachability // .service.attributes.visibility // "public") as $r
+   # Containers scopes keep visibility as a string ("public"); others as {reachability}.
+   | (((.capabilities.visibility | if type == "object" then .reachability else . end)
+       // .service.attributes.visibility // "public") as $r
       | if $r == "public" or $r == "external" then "public" else "private" end) as $scope_visibility
    | select($scope_visibility == $visibility)
    | select((.id | tostring) as $id | $routable | index($id))
@@ -49,11 +56,27 @@ if [[ "$(echo "$CANDIDATES" | jq 'length')" -eq 0 ]]; then
   exit 1
 fi
 
-ROUTE_SCOPE=$(echo "$CANDIDATES" | jq -r '.[0].slug')
-echo "Resolved scope: $ROUTE_SCOPE (id $(echo "$CANDIDATES" | jq -r '.[0].id'), $(echo "$CANDIDATES" | jq -r '.[0].status'))"
+# One active scope (or a single candidate) is unambiguous. With several, guessing
+# could send the link to the wrong one (e.g. a new scope that replaces an old
+# one), so the developer has to name it.
+ACTIVE=$(echo "$CANDIDATES" | jq -c 'map(select(.status == "active"))')
+if [[ "$(echo "$ACTIVE" | jq 'length')" -eq 1 ]]; then
+  PICKED="$ACTIVE"
+elif [[ "$(echo "$ACTIVE" | jq 'length')" -eq 0 && "$(echo "$CANDIDATES" | jq 'length')" -eq 1 ]]; then
+  PICKED="$CANDIDATES"
+else
+  AMBIGUOUS="$CANDIDATES"
+  [[ "$(echo "$ACTIVE" | jq 'length')" -gt 1 ]] && AMBIGUOUS="$ACTIVE"
+  echo "ERROR: application $APPLICATION_ID has more than one $VISIBILITY scope for dimensions $LINK_DIMENSIONS:" \
+    "$(echo "$AMBIGUOUS" | jq -r 'map("\(.slug) (\(.status))") | join(", ")')." >&2
+  echo "Name the scope on each route of the link." >&2
+  exit 1
+fi
 
-OTHER_SCOPES=$(echo "$CANDIDATES" | jq -r '.[1:] | map("\(.slug) (\(.status))") | join(", ")')
+ROUTE_SCOPE=$(echo "$PICKED" | jq -r '.[0].slug')
+echo "Resolved scope: $ROUTE_SCOPE (id $(echo "$PICKED" | jq -r '.[0].id'), $(echo "$PICKED" | jq -r '.[0].status'))"
+
+OTHER_SCOPES=$(echo "$CANDIDATES" | jq -r --arg slug "$ROUTE_SCOPE" 'map(select(.slug != $slug) | "\(.slug) (\(.status))") | join(", ")')
 if [[ -n "$OTHER_SCOPES" ]]; then
-  echo "WARNING: other $VISIBILITY scopes also match: $OTHER_SCOPES. $ROUTE_SCOPE was picked" \
-    "(active first, then the oldest); name the scope on the link to use another one."
+  echo "WARNING: inactive $VISIBILITY scopes also match: $OTHER_SCOPES. $ROUTE_SCOPE is the only active one."
 fi

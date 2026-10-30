@@ -47,13 +47,6 @@ main() {
     return 0
   fi
 
-  UPDATE_ACTION_SPEC_ID=$(np service specification action specification list --serviceSpecificationId "$SERVICE_SPEC_ID" --format json \
-    | jq -r --arg slug "update-$SERVICE_SPECIFICATION_SLUG" 'first(.results[] | select(.slug == $slug) | .id) // ""')
-  if [[ -z "$UPDATE_ACTION_SPEC_ID" ]]; then
-    echo "Error: no action specification 'update-$SERVICE_SPECIFICATION_SLUG' for service specification $SERVICE_SPEC_ID"
-    exit 1
-  fi
-
   # Exposers of the application that route to the deployed scope (all of them
   # when the scope isn't known).
   # Only --nrn: the np CLI in the controlplane-agent image (aws-0.7.0) rejects
@@ -91,10 +84,15 @@ main() {
     return 0
   fi
 
-  # An update action is rejected unless the create succeeded, so only active
-  # services and links can be synced; the rest are reported, not retried.
-  jq -r '.[] | select(.status != "active") | "Skipping endpoint exposer \(.name) [\(.id)] (status=\(.status)): only active services can be updated"' <<< "$EXPOSERS"
-  jq -r '.[] | select(.status != "active") | "Skipping endpoint exposer link \(.name) [\(.id)] (status=\(.status)): only active links can be updated"' <<< "$LINKS"
+  # Active and failed services and links are synced. A link update refused by a
+  # conflict leaves the link failed while its stored routes (and its HTTPRoute) stay
+  # the previous ones, so skipping it would leave the route on a deleted Service.
+  # The platform accepts the update and the link goes back to active. A failed one
+  # whose create never succeeded is refused again: that is reported, and does not
+  # fail the deployment. Anything in progress (creating, deleting) is skipped.
+  SYNCABLE='["active", "failed"]'
+  jq -r --argjson ok "$SYNCABLE" '.[] | select(.status as $s | $ok | index($s) | not) | "Skipping endpoint exposer \(.name) [\(.id)] (status=\(.status))"' <<< "$EXPOSERS"
+  jq -r --argjson ok "$SYNCABLE" '.[] | select(.status as $s | $ok | index($s) | not) | "Skipping endpoint exposer link \(.name) [\(.id)] (status=\(.status))"' <<< "$LINKS"
 
   # wait_for_action KIND ID ACTION_ID -> final status (KIND: service | link)
   wait_for_action() {
@@ -143,41 +141,82 @@ main() {
   }
 
   FAILED=()
+  WARNED=()
 
-  while IFS=$'\t' read -r SERVICE_ID SERVICE_NAME; do
+  # report_failure NAME STATUS: a failed update of an active item fails the step; of
+  # an item that was already failed, it is only reported.
+  report_failure() {
+    if [[ "$2" == "active" ]]; then
+      FAILED+=("$1")
+    else
+      WARNED+=("$1")
+    fi
+  }
+
+  # Only legacy services are updated through the service's update action (links
+  # use their link spec's), so it is looked up only when one routes to this scope:
+  # an app without exposers must deploy even when the action isn't visible to this
+  # API key (a spec registered at the org while the key is the account's lists
+  # none). With no action, each legacy exposer is reported like a failed update.
+  UPDATE_ACTION_SPEC_ID=""
+  if [[ "$(jq 'length' <<< "$EXPOSERS")" -gt 0 ]]; then
+    UPDATE_ACTION_SPEC_ID=$(np service specification action specification list --serviceSpecificationId "$SERVICE_SPEC_ID" --format json \
+      | jq -r --arg slug "update-$SERVICE_SPECIFICATION_SLUG" 'first((.results // [])[] | select(.slug == $slug) | .id) // ""')
+    if [[ -z "$UPDATE_ACTION_SPEC_ID" ]]; then
+      echo "❌ No action specification 'update-$SERVICE_SPECIFICATION_SLUG' visible for service specification $SERVICE_SPEC_ID"
+    fi
+  fi
+
+  while IFS=$'\t' read -r SERVICE_ID SERVICE_NAME SERVICE_STATUS; do
     [[ -z "$SERVICE_ID" ]] && continue
+    if [[ -z "$UPDATE_ACTION_SPEC_ID" ]]; then
+      report_failure "$SERVICE_NAME [$SERVICE_ID]" "$SERVICE_STATUS"
+      continue
+    fi
     # The routes as the user declared them; build_context recomputes the derived
     # fields (visibility, summary).
     PARAMETERS=$(np service read --id "$SERVICE_ID" --format json \
       | jq -c '{routes: [(.attributes.routes // [])[] | del(.visibility, .summary)]}')
     [[ -z "$PARAMETERS" ]] && PARAMETERS='{}'
     if ! sync service "$SERVICE_ID" "$SERVICE_NAME" "$UPDATE_ACTION_SPEC_ID" "$PARAMETERS"; then
-      FAILED+=("$SERVICE_NAME [$SERVICE_ID]")
+      report_failure "$SERVICE_NAME [$SERVICE_ID]" "$SERVICE_STATUS"
     fi
-  done < <(jq -r '.[] | select(.status == "active") | [.id, .name] | @tsv' <<< "$EXPOSERS")
+  done < <(jq -r --argjson ok "$SYNCABLE" '.[] | select(.status as $s | $ok | index($s)) | [.id, .name, .status] | @tsv' <<< "$EXPOSERS")
 
   while IFS= read -r LINK; do
     [[ -z "$LINK" ]] && continue
     LINK_ID=$(jq -r .id <<< "$LINK")
     LINK_NAME="link $(jq -r '.name // .slug // .id' <<< "$LINK")"
+    LINK_STATUS=$(jq -r .status <<< "$LINK")
 
     LINK_ACTION_SPEC_ID=$(np link specification action specification list \
       --linkSpecificationId "$(jq -r .specification_id <<< "$LINK")" --format json | jq -r '
       first(.results[] | select(.type == "update" or (.slug | startswith("update"))) | .id) // ""')
     if [[ -z "$LINK_ACTION_SPEC_ID" ]]; then
       echo "❌ No update action specification for $LINK_NAME [$LINK_ID]"
-      FAILED+=("$LINK_NAME [$LINK_ID]")
+      report_failure "$LINK_NAME [$LINK_ID]" "$LINK_STATUS"
       continue
     fi
 
     # The routes as the user declared them; build_link_context recomputes the
-    # derived fields (endpoints, summaries, auth_type).
-    PARAMETERS=$(jq -c '.attributes | del(.endpoint, .endpoints, .summary, .auth_type)
-      | if .routes then .routes |= map(del(.summary)) else . end' <<< "$LINK")
+    # derived fields (endpoints, summaries, auth_type). Links created before the
+    # routes list kept a single path at the top level, which the update action
+    # rejects ("must have required property 'routes'"): send it as a one-route list.
+    PARAMETERS=$(jq -c '.attributes
+      | if .routes then . else
+          {routes: [{path, methods, scope, groups} | with_entries(select(.value != null))]}
+          + del(.path, .methods, .scope, .groups)
+        end
+      | del(.endpoint, .endpoints, .summary, .auth_type)
+      | .routes |= map(del(.summary))' <<< "$LINK")
     if ! sync link "$LINK_ID" "$LINK_NAME" "$LINK_ACTION_SPEC_ID" "$PARAMETERS"; then
-      FAILED+=("$LINK_NAME [$LINK_ID]")
+      report_failure "$LINK_NAME [$LINK_ID]" "$LINK_STATUS"
     fi
-  done < <(jq -c '.[] | select(.status == "active")' <<< "$LINKS")
+  done < <(jq -c --argjson ok "$SYNCABLE" '.[] | select(.status as $s | $ok | index($s))' <<< "$LINKS")
+
+  if [[ ${#WARNED[@]} -gt 0 ]]; then
+    echo "WARNING: could not update endpoint exposer(s) that were already failed: ${WARNED[*]}"
+  fi
 
   if [[ ${#FAILED[@]} -gt 0 ]]; then
     echo "❌ Could not update endpoint exposer(s): ${FAILED[*]}"

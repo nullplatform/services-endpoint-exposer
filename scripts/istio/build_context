@@ -21,6 +21,7 @@ SERVICE_SLUG=$(echo "$CONTEXT" | jq -r .service.slug)
 ACTION_ID=$(echo "$CONTEXT" | jq -r .id)
 ACTION_NAME=$(echo "$CONTEXT" | jq -r .slug)
 
+source "$SERVICE_PATH/scripts/istio/config"
 K8S_NAMESPACE="${NAMESPACE_OVERRIDE:-nullplatform}"
 APPLICATION_ID=$(echo "$CONTEXT" | jq -r '.tags.application_id // ""')
 

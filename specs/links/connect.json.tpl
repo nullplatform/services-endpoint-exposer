@@ -63,7 +63,7 @@
                             "scope": {
                                 "type": "string",
                                 "title": "Scope",
-                                "description": "Slug of the scope that receives the traffic of this path. Leave empty to use the application's scope whose visibility matches the service (public or private) in the link's dimensions."
+                                "description": "Slug of the scope that receives the traffic of this path. Leave empty to use the application's only active scope whose visibility matches the service (public or private) in the link's dimensions. Required when the application has more than one."
                             },
                             "groups": {
                                 "type": "array",

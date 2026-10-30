@@ -1,0 +1,53 @@
+#!/bin/bash
+
+# Resolve Scope Namespace: prints the Kubernetes namespace that holds a scope's
+# Services, which is where its HTTPRoute must live (next to its backends, so no
+# ReferenceGrant is needed).
+#
+# Usage: resolve_scope_namespace <scope_id>
+#
+# Resolution order:
+#   1. NAMESPACE_OVERRIDE, when set. This is the same source the scope agent
+#      uses to pick the namespace (e.g. "{context.tags.namespace}" on the
+#      channel), so both stay in sync when it is available.
+#   2. The namespace of the platform's Services whose selector has
+#      scope_id=<scope_id> (PLATFORM_SERVICES_JQ in config), searched across the
+#      whole cluster (needs cluster-wide list on services). Other Services that
+#      select the scope_id don't count, so they can't make it ambiguous.
+#   3. K8S_NAMESPACE (default "nullplatform") when the scope has no Service yet
+#      or the cluster-wide list is not allowed, which is the previous behavior.
+
+set -euo pipefail
+
+source "$SERVICE_PATH/scripts/istio/config"
+
+SCOPE_ID="${1:?usage: resolve_scope_namespace <scope_id>}"
+DEFAULT_NAMESPACE="${K8S_NAMESPACE:-nullplatform}"
+
+if [[ -n "${NAMESPACE_OVERRIDE:-}" ]]; then
+  echo "$NAMESPACE_OVERRIDE"
+  exit 0
+fi
+
+# stderr stays out of the JSON
+if ! ALL_SERVICES=$(kubectl get services --all-namespaces -o json 2>/dev/null); then
+  echo "WARNING: could not list Services across namespaces; using $DEFAULT_NAMESPACE for scope_id=$SCOPE_ID" >&2
+  echo "$DEFAULT_NAMESPACE"
+  exit 0
+fi
+
+NAMESPACES=$(echo "$ALL_SERVICES" | jq -r --arg scope_id "$SCOPE_ID" \
+  "$PLATFORM_SERVICES_JQ"' platform_services | [.[] | select(.spec.selector.scope_id == $scope_id) | .metadata.namespace] | unique | .[]')
+
+case "$(echo -n "$NAMESPACES" | grep -c '^' || true)" in
+  0)
+    echo "$DEFAULT_NAMESPACE"
+    ;;
+  1)
+    echo "$NAMESPACES"
+    ;;
+  *)
+    echo "ERROR: scope_id=$SCOPE_ID has Services in more than one namespace: $(echo "$NAMESPACES" | tr '\n' ' ')" >&2
+    exit 1
+    ;;
+esac
