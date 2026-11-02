@@ -58,7 +58,7 @@ nullplatform allows a single link per application and dimensions, so the link ca
 |---|---|
 | **Path** | Path on the service's domain. Supports exact (`/api/users`), parameterized (`/api/users/:id`) and wildcard (`/api/users/*`). Each path can appear once per link |
 | **Verbs** | Optional, `ALL` (any method) by default. Pick HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) to expose only those. `ALL` overrides any other verb selected on the same route |
-| **Scope** | Optional. Slug of the linking application's scope that receives the traffic. When empty, the agent picks (once for the whole link) the application's scope in the link's dimensions whose visibility matches the service (`public` ↔ reachability `public`, `private` ↔ anything else) and that has a Kubernetes Service to route to. With several matches the pick is deterministic: active scopes first, then the oldest; the others are logged and the chosen slug is stored on the link. No match fails and asks for the slug. The form can't list the scopes: the platform doesn't pass them to the link context |
+| **Scope** | Optional. Slug of the linking application's scope that receives the traffic. When empty, the agent picks (once for the whole link) the application's scope in the link's dimensions whose visibility matches the service (`public` ↔ reachability `public`, `private` ↔ anything else) and that has a Kubernetes Service to route to. A single active match (or a single match) is used and its slug is stored on the link. Several active matches fail and ask for the slug, so the link never guesses between scopes. No match fails too. The form can't list the scopes: the platform doesn't pass them to the link context |
 | **Authorized Groups** | Groups allowed to call the path. Required with `aws-cognito`: create and update fail without them. Optional and ignored with `AUTH_TYPE=none` |
 
 Each link gets its own `HTTPRoute` (hostname = the service's domain, one rule per route) and `AuthorizationPolicies`, labeled `nullplatform.com/link-id`; unlink deletes exactly those. A path + method can be exposed by a single link per domain: a link with a route that would overlap another link fails instead of being silently shadowed (Gateway API gives the oldest route the traffic).
@@ -182,6 +182,23 @@ module "endpoint_exposer_requirements" {
 | `PUBLIC_GATEWAY_NAME` | `gateway-public` | Name of the public Istio Gateway resource |
 | `PRIVATE_GATEWAY_NAME` | `gateway-private` | Name of the private Istio Gateway resource |
 | `GATEWAY_NAMESPACE` | `gateways` | Kubernetes namespace where Gateway resources live |
+
+#### Optional — applications in their own namespaces
+
+Each HTTPRoute is created in the namespace of the Services it routes to, so no ReferenceGrant is needed. The namespace of a scope is resolved by `scripts/istio/resolve_scope_namespace`, in this order:
+
+1. `NAMESPACE_OVERRIDE`, when set on the agent or channel (e.g. `{context.tags.namespace}`, the same value the scope agent uses).
+2. The namespace of the platform's Services whose selector has the scope's `scope_id`, searched across the cluster.
+3. `nullplatform`, when the scope has no Service yet.
+
+Only the Services the scope agent creates count, here and when picking the backend: their selector carries `nullplatform: "true"`, `scope_id` and `deployment_id`. Another Service that selects a `scope_id` (a test echo, a hand-made one) is never routed to. A route whose scope has no such Service yet (not deployed, or failed) is left out of the HTTPRoute with a warning, so the gateway answers 404 on it until the scope is deployed and the deploy sync updates the exposer; a link with no backend at all gets no HTTPRoute. The link also logs a warning when its scope isn't `active` or has no active deployment.
+
+All the routes of one link (or of one legacy service) must point to scopes in the same namespace. The links of one domain can live in different namespaces, so the link conflict and domain-owner checks read HTTPRoutes across the cluster.
+
+Requirements for applications outside `nullplatform`:
+
+- The agent needs cluster-wide `list` on `services` and `httproutes`, plus `create`, `patch` and `delete` on `httproutes` in those namespaces. Without cluster-wide `list`, routes stay in `nullplatform` (the previous behavior), but domain service create and link create or update fail, since the domain owner and conflicts can't be checked.
+- The gateway listeners must accept routes from those namespaces (`allowedRoutes.namespaces.from: All` or a `Selector`).
 
 #### Example — OpenTofu agent module
 

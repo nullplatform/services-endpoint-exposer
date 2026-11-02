@@ -41,13 +41,26 @@ else
   SCOPES_JSON=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq '.results // []')
 
   SCOPE_SLUGS=$(echo "$ROUTES_JSON" | jq -r '[.[].scope] | unique | .[]')
+  ROUTE_NAMESPACES=""
   while IFS= read -r SCOPE_SLUG; do
     SCOPE_ID=$(echo "$SCOPES_JSON" | jq -r --arg slug "$SCOPE_SLUG" '.[] | select(.slug == $slug) | .id')
     [[ -z "$SCOPE_ID" || "$SCOPE_ID" == "null" ]] && continue
+    SCOPE_NAMESPACE=$("$SERVICE_PATH/scripts/istio/resolve_scope_namespace" "$SCOPE_ID")
+    ROUTE_NAMESPACES=$(printf '%s\n%s' "$ROUTE_NAMESPACES" "$SCOPE_NAMESPACE" | sed '/^$/d' | sort -u)
     SCOPE_DOMAIN=$(np scope read --id "$SCOPE_ID" --format json | jq -r '.domain // ""')
     [[ -z "$SCOPE_DOMAIN" || "$SCOPE_DOMAIN" == "null" ]] && continue
     HOSTNAMES_JSON=$(echo "$HOSTNAMES_JSON" | jq --arg d "$SCOPE_DOMAIN" '. + [$d] | unique')
   done <<< "$SCOPE_SLUGS"
+
+  # The HTTPRoute goes next to its backends. Backends in several namespaces
+  # would need a ReferenceGrant, which is not supported.
+  if [[ "$(echo -n "$ROUTE_NAMESPACES" | grep -c '^' || true)" -gt 1 ]]; then
+    echo "ERROR: $VISIBILITY routes point to scopes in different namespaces: $(echo "$ROUTE_NAMESPACES" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+  K8S_NAMESPACE="${ROUTE_NAMESPACES:-$K8S_NAMESPACE}"
+  export K8S_NAMESPACE
+  echo "$VISIBILITY HTTPRoute namespace: $K8S_NAMESPACE"
 
   if [[ "$(echo "$HOSTNAMES_JSON" | jq 'length')" -eq 0 ]]; then
     CREATE_EMPTY=true
@@ -70,6 +83,7 @@ else
     --arg name "$SERVICE_SLUG-$SERVICE_ID-$SUFFIX" \
     --arg service_slug "$SERVICE_SLUG" \
     --arg service_id "$SERVICE_ID" \
+    --arg link_id "" \
     --arg k8s_namespace "$K8S_NAMESPACE" \
     --argjson hostnames "$HOSTNAMES_JSON" \
     --arg gateway_name "$GATEWAY_NAME" \
@@ -79,6 +93,7 @@ else
       name: $name,
       service_slug: $service_slug,
       service_id: $service_id,
+      link_id: $link_id,
       k8s_namespace: $k8s_namespace,
       hostnames: $hostnames,
       gateway_name: $gateway_name,

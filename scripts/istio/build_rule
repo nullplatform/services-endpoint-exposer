@@ -10,14 +10,20 @@
 # pods by spec.selector.deployment_id. Blue is the scope's active deployment and
 # green the in-progress one; they are identified by deployment id, never by
 # position (kubectl lists them by name, which says nothing about which is new).
+# Only Services created by the platform count (PLATFORM_SERVICES_JQ in config).
+# A scope without one gets an empty SCOPE_RULE: process_routes leaves its routes
+# out of the HTTPRoute, so the gateway answers 404, instead of pointing them at a
+# Service that doesn't exist (which Gateway API answers with 500).
 # Sourced once per route x method, so the result is cached per scope for the
 # rest of the run.
 
 set -euo pipefail
 
-if [[ "${_BUILD_RULE_CACHED_SCOPE:-}" == "$SCOPE_ID" && -n "${_BUILD_RULE_CACHED_RULE:-}" ]]; then
-  SCOPE_RULE="$_BUILD_RULE_CACHED_RULE"
-  echo "Using cached backend for scope_id=$SCOPE_ID: $(echo "$SCOPE_RULE" | jq -c '.blue_green_annotation.forward.targetGroups // .service.name')"
+source "$SERVICE_PATH/scripts/istio/config"
+
+if [[ "${_BUILD_RULE_CACHED_SCOPE:-}" == "$SCOPE_ID" ]]; then
+  SCOPE_RULE="${_BUILD_RULE_CACHED_RULE:-}"
+  echo "Using cached backend for scope_id=$SCOPE_ID: $(echo "${SCOPE_RULE:-null}" | jq -c '.blue_green_annotation.forward.targetGroups // .service.name')"
   return 0
 fi
 
@@ -26,6 +32,17 @@ ACTIVE_DEPLOYMENT=$(echo "$SCOPE_JSON" | jq -r '.active_deployment // "" | tostr
 IN_PROGRESS_DEPLOYMENT=$(echo "$SCOPE_JSON" | jq -r '.in_progress_deployment // "" | tostring')
 [[ "$ACTIVE_DEPLOYMENT" == "null" ]] && ACTIVE_DEPLOYMENT=""
 [[ "$IN_PROGRESS_DEPLOYMENT" == "null" ]] && IN_PROGRESS_DEPLOYMENT=""
+SCOPE_STATUS=$(echo "$SCOPE_JSON" | jq -r '.status // ""')
+SCOPE_SLUG_FOR_LOG=$(echo "$SCOPE_JSON" | jq -r '.slug // ""')
+
+# The routes are still rendered (the scope may come back, and the deploy sync
+# updates the exposer when it does), but a broken scope is called out.
+if [[ -n "$SCOPE_STATUS" && "$SCOPE_STATUS" != "active" ]]; then
+  echo "WARNING: scope ${SCOPE_SLUG_FOR_LOG:-$SCOPE_ID} (id $SCOPE_ID) is $SCOPE_STATUS: its routes may have no backend"
+fi
+if [[ -z "$ACTIVE_DEPLOYMENT" && -z "$IN_PROGRESS_DEPLOYMENT" ]]; then
+  echo "WARNING: scope ${SCOPE_SLUG_FOR_LOG:-$SCOPE_ID} (id $SCOPE_ID) has no active deployment: its routes get no backend until it is deployed"
+fi
 
 DEPLOYMENT_STATUS=""
 SWITCHED_TRAFFIC=0
@@ -37,9 +54,14 @@ fi
 echo "Scope $SCOPE_ID: active_deployment=${ACTIVE_DEPLOYMENT:-none} in_progress=${IN_PROGRESS_DEPLOYMENT:-none} status=${DEPLOYMENT_STATUS:-none} switched_traffic=$SWITCHED_TRAFFIC"
 
 # stderr stays out of the JSON (warnings used to corrupt it)
+# Additional ports get their own Services with the same selector. The main one's
+# name ends with the deployment id (<app>-<scope>-<scope_id>-d-<deployment_id>),
+# so it sorts first.
 SERVICES_JSON=$(kubectl get services -n "$K8S_NAMESPACE" -o json \
-  | jq --arg scope_id "$SCOPE_ID" '[.items[] | select(.spec.selector.scope_id == $scope_id)
-      | {name: .metadata.name, port: .spec.ports[0].port, deployment_id: (.spec.selector.deployment_id // "")}]')
+  | jq --arg scope_id "$SCOPE_ID" "$PLATFORM_SERVICES_JQ"' platform_services
+      | [.[] | select(.spec.selector.scope_id == $scope_id)
+        | {name: .metadata.name, port: .spec.ports[0].port, deployment_id: .spec.selector.deployment_id}]
+      | sort_by([(.deployment_id as $d | .name | endswith($d) | not), (.name | length)])')
 
 service_for() {
   echo "$SERVICES_JSON" | jq -c --arg d "$1" 'first(.[] | select(.deployment_id == $d)) // empty'
@@ -77,8 +99,8 @@ case "$DEPLOYMENT_STATUS" in
 esac
 
 if [[ -z "$BLUE" && -z "$GREEN" ]]; then
-  echo "No Kubernetes service for scope_id=$SCOPE_ID yet: the rule gets no backend (404)"
-  SCOPE_RULE='{"service": {"name": "response-404", "port": {"number": 80}}}'
+  echo "WARNING: no platform Service for scope_id=$SCOPE_ID in namespace $K8S_NAMESPACE: its routes are left out of the HTTPRoute (404)"
+  SCOPE_RULE=""
 elif [[ "$TARGET" == "green" && -n "$GREEN" ]] || [[ -z "$BLUE" ]]; then
   echo "Routing scope_id=$SCOPE_ID to $(echo "$GREEN" | jq -r .name) (in-progress deployment, status=${DEPLOYMENT_STATUS:-none})"
   SCOPE_RULE=$(single_rule "$GREEN")

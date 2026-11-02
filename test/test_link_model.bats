@@ -18,6 +18,12 @@ setup() {
   export COGNITO_USER_POOL_ARN_DEV="arn:aws:cognito-idp:us-east-1:123456789012:userpool/us-east-1_AbCdEf"
   export CONTEXT="$(load_fixture link-notification)"
 
+  # No scopes or Services unless a test sets them (scope_env): the link's HTTPRoute
+  # stays in the default namespace.
+  export NP_SCOPE_LIST_FILE="$TEST_TEMP_DIR/scopes.json" KUBECTL_SERVICES_FILE="$TEST_TEMP_DIR/services.json"
+  echo '{"results": []}' > "$NP_SCOPE_LIST_FILE"
+  echo '{"items": []}' > "$KUBECTL_SERVICES_FILE"
+
   # np mock: canned responses from files, every call logged
   cat > "$TEST_TEMP_DIR/np" << 'EOF'
 #!/bin/bash
@@ -316,6 +322,50 @@ MOCK
   assert_output --partial "points at gateway"
 }
 
+# getent mock: "ahosts" answers from $DIG_DIR/<name>.A, in getent's format
+getent_env() {
+  cat > "$TEST_TEMP_DIR/getent" << 'MOCK'
+#!/bin/bash
+echo "getent $*" >> "$TEST_TEMP_DIR/getent.log"
+[[ -f "$DIG_DIR/$2.A" ]] || exit 2
+sed 's/$/ STREAM/' "$DIG_DIR/$2.A"
+MOCK
+  chmod +x "$TEST_TEMP_DIR/getent"
+}
+
+@test "check_domain_dns: without dig, getent checks the domain with the agent's resolver" {
+  dns_env public
+  getent_env
+  echo "10.0.0.9" > "$DIG_DIR/api.acme.com.A"
+  echo "10.0.0.9" > "$DIG_DIR/lb-123.elb.amazonaws.com.A"
+
+  DNS_TOOL=getent run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "dig is not available"
+  assert_output --partial "points at gateway gateways/gateway-public"
+  assert_file_not_exists "$TEST_TEMP_DIR/dig.log"
+}
+
+@test "check_domain_dns: without dig, a domain getent can't resolve still fails in enforce" {
+  dns_env public
+  getent_env
+
+  DNS_TOOL=getent run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_failure
+  assert_output --partial "doesn't resolve with the agent's resolver"
+}
+
+@test "check_domain_dns: without dig or getent it warns and skips, even in enforce" {
+  dns_env public
+
+  DNS_TOOL=none run bash "$SERVICE_PATH/scripts/istio/check_domain_dns"
+
+  assert_success
+  assert_output --partial "WARNING: neither dig nor getent is available"
+}
+
 @test "build_link_context: builds a single route on the service's domain" {
   run_context_script build_link_context LINK_ID DOMAIN_NAME GATEWAY_NAME APPLICATION_ID ROUTES_JSON
 
@@ -468,7 +518,9 @@ scope_env() {
   export NP_SCOPE_LIST_FILE="$TEST_TEMP_DIR/scopes.json" KUBECTL_SERVICES_FILE="$TEST_TEMP_DIR/services.json"
   jq -c '{results: [.[] | {id, slug, status: (.status // "active"), dimensions: {environment: "dev"},
     capabilities: {visibility: {reachability: .reachability}}}]}' <<< "$1" > "$NP_SCOPE_LIST_FILE"
-  jq -c '{items: [.[] | select(.routable != false) | {spec: {selector: {scope_id: (.id | tostring)}}}]}' <<< "$1" > "$KUBECTL_SERVICES_FILE"
+  jq -c '{items: [.[] | select(.routable != false)
+    | {metadata: {namespace: (.namespace // "nullplatform")}, spec: {selector: {nullplatform: "true", scope_id: (.id | tostring), deployment_id: "1"}}}]}' \
+    <<< "$1" > "$KUBECTL_SERVICES_FILE"
   export CONTEXT="$(jq -c 'del(.parameters.scope) | del(.link.attributes.scope) | .link.scope = null' <<< "$CONTEXT")"
 }
 
@@ -479,6 +531,17 @@ scope_env() {
     {"id": 3, "slug": "serverless", "reachability": "public", "routable": false},
     {"id": 4, "slug": "gone",       "reachability": "public", "status": "deleted"}
   ]'
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  assert_output --partial '"scope":"pub"'
+}
+
+@test "build_link_context: without a scope, reads a Containers scope's string visibility" {
+  scope_env '[{"id": 1, "slug": "pub", "reachability": "public"}]'
+  jq -c '.results |= map(.capabilities.visibility = "public")' "$NP_SCOPE_LIST_FILE" > "$NP_SCOPE_LIST_FILE.tmp" \
+    && mv "$NP_SCOPE_LIST_FILE.tmp" "$NP_SCOPE_LIST_FILE"
 
   run_context_script build_link_context ROUTES_JSON
 
@@ -506,20 +569,31 @@ scope_env() {
 
 }
 
-@test "build_link_context: without a scope, several matches pick active first, then the oldest" {
+@test "build_link_context: without a scope, several active matches fail and ask for the scope" {
+  scope_env '[
+    {"id": 2, "slug": "production",    "reachability": "public"},
+    {"id": 3, "slug": "production-v2", "reachability": "public"}
+  ]'
+
+  run bash -c "source \"$SERVICE_PATH/scripts/istio/build_link_context\" && echo \"ROUTES_JSON=\$ROUTES_JSON\""
+
+  assert_failure
+  assert_output --partial "more than one public scope"
+  assert_output --partial "production (active), production-v2 (active)"
+  assert_output --partial "Name the scope on each route of the link."
+}
+
+@test "build_link_context: without a scope, a single active match wins over inactive ones" {
   scope_env '[
     {"id": 1, "slug": "old-failed", "reachability": "public", "status": "failed"},
-    {"id": 2, "slug": "newer",      "reachability": "public"},
-    {"id": 3, "slug": "older",      "reachability": "public"}
+    {"id": 2, "slug": "production", "reachability": "public"}
   ]'
-  jq -c '.results |= map(.created_at = ({"1": "2024-01-01", "2": "2026-05-01", "3": "2025-03-01"}[.id | tostring]))' \
-    "$NP_SCOPE_LIST_FILE" > "$NP_SCOPE_LIST_FILE.tmp" && mv "$NP_SCOPE_LIST_FILE.tmp" "$NP_SCOPE_LIST_FILE"
 
   run bash -c "source \"$SERVICE_PATH/scripts/istio/build_link_context\" && echo \"ROUTES_JSON=\$ROUTES_JSON\""
 
   assert_success
-  assert_output --partial '"scope":"older"'
-  assert_output --partial "other public scopes also match: newer (active), old-failed (failed)"
+  assert_output --partial '"scope":"production"'
+  assert_output --partial "inactive public scopes also match: old-failed (failed)"
 }
 
 # --- routes list ---
@@ -753,7 +827,7 @@ conflict_env() {
   run bash "$SERVICE_PATH/scripts/istio/delete_link_resources"
 
   assert_success
-  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "delete httproute -n nullplatform -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=link-5678"
+  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "delete httproute --all-namespaces -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=link-5678"
   assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "delete authorizationpolicy -n gateways -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=link-5678"
 }
 
@@ -809,4 +883,103 @@ conflict_env() {
   run bash "$SERVICE_PATH/scripts/np/check_active_links"
 
   assert_success
+}
+
+# --- apps in their own namespace ----------------------------------------------
+
+@test "build_link_context: the link's HTTPRoute goes to the namespace of its scope's Services" {
+  scope_env '[{"id": 1, "slug": "pub", "reachability": "public", "namespace": "team-a"}]'
+
+  run_context_script build_link_context ROUTES_JSON K8S_NAMESPACE
+
+  assert_success
+  assert_output --partial '"scope":"pub"'
+  assert_output --partial "K8S_NAMESPACE=team-a"
+  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "get services --all-namespaces"
+}
+
+@test "build_link_context: a scope named on the route resolves its namespace too" {
+  scope_env '[{"id": 7, "slug": "users-prod", "reachability": "public", "namespace": "team-b"}]'
+  routes_context '[{"path": "/api/users", "groups": ["admin"], "scope": "users-prod"}]'
+
+  run_context_script build_link_context K8S_NAMESPACE
+
+  assert_success
+  assert_output --partial "K8S_NAMESPACE=team-b"
+}
+
+@test "build_link_context: an app without Services yet keeps the default namespace" {
+  scope_env '[{"id": 7, "slug": "users-prod", "reachability": "public", "routable": false}]'
+  routes_context '[{"path": "/api/users", "groups": ["admin"], "scope": "users-prod"}]'
+
+  run_context_script build_link_context K8S_NAMESPACE
+
+  assert_success
+  assert_output --partial "K8S_NAMESPACE=nullplatform"
+}
+
+@test "build_link_context: NAMESPACE_OVERRIDE places the link's HTTPRoute" {
+  scope_env '[{"id": 7, "slug": "users-prod", "reachability": "public", "namespace": "team-b"}]'
+  routes_context '[{"path": "/api/users", "groups": ["admin"], "scope": "users-prod"}]'
+
+  NAMESPACE_OVERRIDE=fixed run_context_script build_link_context K8S_NAMESPACE
+
+  assert_success
+  assert_output --partial "K8S_NAMESPACE=fixed"
+}
+
+@test "build_link_context: refuses routes to scopes in different namespaces" {
+  scope_env '[
+    {"id": 7, "slug": "users-prod",  "reachability": "public", "namespace": "team-a"},
+    {"id": 8, "slug": "health-prod", "reachability": "public", "namespace": "team-b"}]'
+  routes_context '[
+    {"path": "/api/users", "groups": ["admin"], "scope": "users-prod"},
+    {"path": "/health", "groups": ["ops"], "scope": "health-prod"}]'
+
+  run_context_script build_link_context K8S_NAMESPACE
+
+  assert_failure
+  assert_output --partial "scopes in different namespaces: team-a team-b"
+}
+
+@test "check_link_conflict: looks for conflicts in every namespace" {
+  conflict_env "/api/users" '["GET"]'
+  httproute_items '[{"name": "r1", "link_id": "link-other", "host": "api.acme.com", "path": "/api/users", "method": "GET"}]' > "$KUBECTL_HTTPROUTES_FILE"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_link_conflict"
+
+  assert_failure
+  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "get httproute --all-namespaces"
+}
+
+@test "validate_domain: checks the domain owner in every namespace" {
+  export KUBECTL_GATEWAY_FILE="$TEST_TEMP_DIR/gateway.json" KUBECTL_HTTPROUTES_FILE="$TEST_TEMP_DIR/httproutes.json"
+  export GATEWAY_NAME=gateway-public SERVICE_ID=svc-1234 K8S_NAMESPACE=nullplatform
+  jq -n '{spec: {listeners: [{hostname: "*.acme.com"}]}}' > "$KUBECTL_GATEWAY_FILE"
+  echo '{"items": []}' > "$KUBECTL_HTTPROUTES_FILE"
+
+  DOMAIN_NAME=api.acme.com run bash "$SERVICE_PATH/scripts/istio/validate_domain"
+
+  assert_success
+  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "get httproute --all-namespaces"
+}
+
+@test "delete_service_resources: removes leftover HTTPRoutes in every namespace" {
+  export SERVICE_ID=svc-1234 K8S_NAMESPACE=nullplatform
+
+  run bash "$SERVICE_PATH/scripts/istio/delete_service_resources"
+
+  assert_success
+  assert_file_contains "$TEST_TEMP_DIR/kubectl.log" "delete httproute --all-namespaces -l nullplatform.com/managed-by=http-route-access-control,nullplatform.com/service-id=svc-1234"
+}
+
+# --- service spec --------------------------------------------------------------
+
+@test "service spec: domain_name is required, so the form refuses an empty domain" {
+  # The UI validates the create (and update) form against the spec's required list;
+  # without it an empty domain reached the agent and failed there.
+  run bash -c "sed 's/{{[^}]*}}/x/g' \"$SERVICE_PATH/specs/service-spec.json.tpl\" | jq -c '.attributes.schema.required'"
+
+  assert_success
+  assert_output '["domain_name"]'
 }
