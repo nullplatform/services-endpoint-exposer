@@ -80,33 +80,55 @@ elif [[ "$VISIBILITY" == "public" ]]; then
   fi
 fi
 
-# dig prints the CNAME chain followed by the addresses, one per line; getent
-# only the addresses.
+# resolve <name>: sets RESOLVED to the addresses (dig also lists the CNAME chain),
+# one per line. A query that gets no reply (dig exit 9: no server reachable) is not
+# an empty answer: it returns 1 with RESOLVE_ERROR set, so it is reported as such
+# instead of as a missing domain (or, with pipefail, aborting without a message).
+# getent can't tell a missing name from a resolver that doesn't answer (both exit 2).
 resolve() {
-  local name="$1"
+  local name="$1" type out rc
+  RESOLVED=""
+  RESOLVE_ERROR=""
   if [[ "$DNS_TOOL" == "getent" ]]; then
-    { getent ahosts "$name" 2>/dev/null || true; } | awk '{print $1}' | sort -u
+    out=$(getent ahosts "$name" 2>/dev/null) || true
+    RESOLVED=$(echo "$out" | awk 'NF {print $1}' | sort -u)
     return 0
   fi
-  {
-    dig +time=3 +tries=2 +short ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} "$name" A
-    dig +time=3 +tries=2 +short ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} "$name" AAAA
-  } 2>/dev/null | { grep -v '^;' || true; } | sed 's/\.$//' | sort -u
+  for type in A AAAA; do
+    rc=0
+    out=$(dig +time=3 +tries=2 +short ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} "$name" "$type" 2>&1) || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      RESOLVE_ERROR="could not query the $type records of '$name' with $RESOLVER_LABEL (dig exit $rc: $(echo "$out" | sed '/^$/d' | tail -1))"
+      return 1
+    fi
+    RESOLVED+=$'\n'"$(echo "$out" | { grep -v '^;' || true; } | sed 's/\.$//')"
+  done
+  RESOLVED=$(echo "$RESOLVED" | sed '/^$/d' | sort -u)
 }
 
 echo "Checking DNS of '$DOMAIN_NAME' ($VISIBILITY) with $RESOLVER_LABEL..."
 
-ANSWER=$(resolve "$DOMAIN_NAME")
+if ! resolve "$DOMAIN_NAME"; then
+  dns_problem "$RESOLVE_ERROR. Check that the agent can reach a DNS server."
+  return 0 2>/dev/null || exit 0
+fi
+ANSWER="$RESOLVED"
 
 if [[ -z "$ANSWER" && "$DNS_TOOL" == "getent" ]]; then
-  dns_problem "'$DOMAIN_NAME' doesn't resolve with the agent's resolver. Register the domain and create the record pointing at the gateway first."
+  dns_problem "'$DOMAIN_NAME' doesn't resolve with the agent's resolver: the record doesn't exist, or the resolver didn't answer. Register the domain and create the record pointing at the gateway first."
   return 0 2>/dev/null || exit 0
 fi
 
 if [[ -z "$ANSWER" ]]; then
-  # The authority section names the closest existing zone, even on NXDOMAIN.
-  ZONE=$({ dig +time=3 +tries=2 +noall +authority ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} "$DOMAIN_NAME" SOA 2>/dev/null || true; } |
-    awk '$4 == "SOA" && !found {print $1; found = 1}' | sed 's/\.$//')
+  # The authority section names the closest existing zone, even on NXDOMAIN. A
+  # lookup that gets no reply can't tell which zone is missing the record.
+  SOA_RC=0
+  SOA=$(dig +time=3 +tries=2 +noall +authority ${RESOLVER_ARGS[@]+"${RESOLVER_ARGS[@]}"} "$DOMAIN_NAME" SOA 2>&1) || SOA_RC=$?
+  if [[ "$SOA_RC" -ne 0 ]]; then
+    dns_problem "'$DOMAIN_NAME' has no A/AAAA/CNAME record, and its zone could not be looked up with $RESOLVER_LABEL (dig exit $SOA_RC). Create the record pointing at the gateway first."
+    return 0 2>/dev/null || exit 0
+  fi
+  ZONE=$(echo "$SOA" | awk '$4 == "SOA" && !found {print $1; found = 1}' | sed 's/\.$//')
   if [[ -z "$ZONE" || "$ZONE" != *.* ]]; then
     dns_problem "'$DOMAIN_NAME' doesn't exist in DNS: no zone serves it${ZONE:+ (only the TLD '$ZONE')}. Register the domain or fix the name."
   else
@@ -126,13 +148,19 @@ if [[ -z "$GATEWAY_ADDRESSES" ]]; then
   return 0 2>/dev/null || exit 0
 fi
 
+# The gateway's hostname (e.g. a load balancer's) is resolved with the agent's
+# resolver, not the public one. (A `VAR=() cmd` prefix would set it to the string
+# "()", not empty it.)
+RESOLVER_ARGS=()
+RESOLVER_LABEL="the agent's resolver"
 GATEWAY_TARGETS="$GATEWAY_ADDRESSES"
 while IFS= read -r ADDRESS; do
   [[ -z "$ADDRESS" || "$ADDRESS" =~ ^[0-9.:]+$ ]] && continue
-  if [[ "$DNS_TOOL" == "getent" ]]; then
-    GATEWAY_TARGETS+=$'\n'"$(RESOLVER_ARGS=() resolve "$ADDRESS")"
+  # If that fails, the domain only can't be matched to it (a warning below).
+  if resolve "$ADDRESS"; then
+    GATEWAY_TARGETS+=$'\n'"$RESOLVED"
   else
-    GATEWAY_TARGETS+=$'\n'"$({ dig +time=3 +tries=2 +short "$ADDRESS" A 2>/dev/null || true; } | { grep -v '^;' || true; } | sed 's/\.$//')"
+    echo "WARNING: $RESOLVE_ERROR"
   fi
 done <<< "$GATEWAY_ADDRESSES"
 

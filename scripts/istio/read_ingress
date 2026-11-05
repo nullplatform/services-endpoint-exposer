@@ -6,14 +6,23 @@ source "$SERVICE_PATH/scripts/istio/config"
 
 LABEL="nullplatform.com/service-id=$SERVICE_ID"
 
-echo "=== HTTPRoutes (all namespaces) ==="
-kubectl get httproutes --all-namespaces -l "$LABEL" -o yaml 2>/dev/null || echo "(none found)"
+# show <title> <kubectl get args...>: an error (RBAC denial, unreachable API) is
+# reported as such, not as "none found".
+show() {
+  local title="$1" out
+  shift
+  echo "=== $title ==="
+  if ! out=$(kubectl get "$@" -o yaml 2>&1); then
+    echo "ERROR: could not read: $out"
+  elif [[ "$(echo "$out" | yq '.items | length')" == "0" ]]; then
+    echo "(none found)"
+  else
+    echo "$out"
+  fi
+  echo ""
+}
 
-echo ""
-echo "=== AuthorizationPolicies (namespace: $GATEWAY_NAMESPACE) ==="
-kubectl get authorizationpolicies -n "$GATEWAY_NAMESPACE" -l "$LABEL" -o yaml 2>/dev/null || echo "(none found)"
-
-echo ""
-echo "=== RequestAuthentication (namespace: $GATEWAY_NAMESPACE) ==="
-kubectl get requestauthentication -n "$GATEWAY_NAMESPACE" \
-  -l "nullplatform.com/managed-by=http-route-access-control" -o yaml 2>/dev/null || echo "(none found)"
+show "HTTPRoutes (all namespaces)" httproutes --all-namespaces -l "$LABEL"
+show "AuthorizationPolicies (namespace: $GATEWAY_NAMESPACE)" authorizationpolicies -n "$GATEWAY_NAMESPACE" -l "$LABEL"
+show "RequestAuthentication (namespace: $GATEWAY_NAMESPACE)" requestauthentication -n "$GATEWAY_NAMESPACE" \
+  -l "nullplatform.com/managed-by=http-route-access-control"

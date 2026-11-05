@@ -51,11 +51,7 @@ fi
 # domain service must be created while the legacy routes still serve the domain.
 # Each link's HTTPRoute lives in its application's namespace, so the domain is checked
 # across the cluster. A partial view would miss a conflict: fail instead.
-if ! HTTPROUTES=$(kubectl get httproute --all-namespaces \
-    -l "nullplatform.com/managed-by=http-route-access-control" -o json 2>&1); then
-  echo "ERROR: could not list HTTPRoutes across namespaces: $HTTPROUTES" >&2
-  exit 1
-fi
+HTTPROUTES=$(list_cluster_wide httproute -l "nullplatform.com/managed-by=http-route-access-control") || exit 1
 
 OWNERS=$(echo "$HTTPROUTES" | jq -r --arg host "$DOMAIN_NAME" --arg sid "$SERVICE_ID" '
   [.items[]

@@ -35,8 +35,9 @@ IN_PROGRESS_DEPLOYMENT=$(echo "$SCOPE_JSON" | jq -r '.in_progress_deployment // 
 SCOPE_STATUS=$(echo "$SCOPE_JSON" | jq -r '.status // ""')
 SCOPE_SLUG_FOR_LOG=$(echo "$SCOPE_JSON" | jq -r '.slug // ""')
 
-# The routes are still rendered (the scope may come back, and the deploy sync
-# updates the exposer when it does), but a broken scope is called out.
+# Only a scope's state is reported here; whether its routes are rendered depends on
+# its Services below (none: left out of the HTTPRoute until the scope is deployed
+# and the deploy sync updates the exposer).
 if [[ -n "$SCOPE_STATUS" && "$SCOPE_STATUS" != "active" ]]; then
   echo "WARNING: scope ${SCOPE_SLUG_FOR_LOG:-$SCOPE_ID} (id $SCOPE_ID) is $SCOPE_STATUS: its routes may have no backend"
 fi
@@ -53,11 +54,19 @@ if [[ -n "$IN_PROGRESS_DEPLOYMENT" ]]; then
 fi
 echo "Scope $SCOPE_ID: active_deployment=${ACTIVE_DEPLOYMENT:-none} in_progress=${IN_PROGRESS_DEPLOYMENT:-none} status=${DEPLOYMENT_STATUS:-none} switched_traffic=$SWITCHED_TRAFFIC"
 
-# stderr stays out of the JSON (warnings used to corrupt it)
+# stderr stays out of the JSON (warnings used to corrupt it), and into the error:
+# a failed list must not read as "no Service", which would drop the scope's routes.
 # Additional ports get their own Services with the same selector. The main one's
-# name ends with the deployment id (<app>-<scope>-<scope_id>-d-<deployment_id>),
-# so it sorts first.
-SERVICES_JSON=$(kubectl get services -n "$K8S_NAMESPACE" -o json \
+# name ends with the deployment id (<app>-<scope>-<scope_id>-d-<deployment_id>, or
+# d-<scope_id>-<deployment_id>), so it sorts first.
+KUBECTL_ERR=$(mktemp)
+if ! NAMESPACE_SERVICES=$(kubectl get services -n "$K8S_NAMESPACE" -o json 2>"$KUBECTL_ERR"); then
+  echo "ERROR: could not list Services in namespace $K8S_NAMESPACE: $(cat "$KUBECTL_ERR")" >&2
+  rm -f "$KUBECTL_ERR"
+  exit 1
+fi
+rm -f "$KUBECTL_ERR"
+SERVICES_JSON=$(echo "$NAMESPACE_SERVICES" \
   | jq --arg scope_id "$SCOPE_ID" "$PLATFORM_SERVICES_JQ"' platform_services
       | [.[] | select(.spec.selector.scope_id == $scope_id)
         | {name: .metadata.name, port: .spec.ports[0].port, deployment_id: .spec.selector.deployment_id}]

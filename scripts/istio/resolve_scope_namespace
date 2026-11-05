@@ -14,8 +14,10 @@
 #      scope_id=<scope_id> (PLATFORM_SERVICES_JQ in config), searched across the
 #      whole cluster (needs cluster-wide list on services). Other Services that
 #      select the scope_id don't count, so they can't make it ambiguous.
-#   3. K8S_NAMESPACE (default "nullplatform") when the scope has no Service yet
-#      or the cluster-wide list is not allowed, which is the previous behavior.
+#   3. K8S_NAMESPACE (default "nullplatform") when the scope has no Service yet.
+#
+# A failed cluster-wide list fails (list_cluster_wide in config): falling back to
+# K8S_NAMESPACE would find no Service there, and the route would be removed.
 
 set -euo pipefail
 
@@ -29,12 +31,7 @@ if [[ -n "${NAMESPACE_OVERRIDE:-}" ]]; then
   exit 0
 fi
 
-# stderr stays out of the JSON
-if ! ALL_SERVICES=$(kubectl get services --all-namespaces -o json 2>/dev/null); then
-  echo "WARNING: could not list Services across namespaces; using $DEFAULT_NAMESPACE for scope_id=$SCOPE_ID" >&2
-  echo "$DEFAULT_NAMESPACE"
-  exit 0
-fi
+ALL_SERVICES=$(list_cluster_wide services) || exit 1
 
 NAMESPACES=$(echo "$ALL_SERVICES" | jq -r --arg scope_id "$SCOPE_ID" \
   "$PLATFORM_SERVICES_JQ"' platform_services | [.[] | select(.spec.selector.scope_id == $scope_id) | .metadata.namespace] | unique | .[]')

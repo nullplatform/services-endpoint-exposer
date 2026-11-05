@@ -27,7 +27,12 @@ setup() {
 printf '%s\n' "$*" >> "$NP_CALLS"
 # Like the np CLI in the controlplane-agent image (aws-0.7.0).
 if [[ " $* " == *" --specification-id "* ]]; then echo "Error: unknown flag: --specification-id" >&2; exit 1; fi
-[[ -n "${NP_FAIL:-}" && "$*" == "$NP_FAIL"* ]] && exit 1
+[[ -n "${NP_FAIL:-}" && "$*" == "$NP_FAIL"* ]] && { echo '{"error": "request failed with status 503: unavailable"}'; exit 1; }
+# NP_CREATE_STATUS: action create answers this HTTP error, like the np CLI
+if [[ -n "${NP_CREATE_STATUS:-}" && "$*" == *"action create"* ]]; then
+  echo "{\"error\": \"request failed with status $NP_CREATE_STATUS: rejected\"}"
+  exit 1
+fi
 case "$*" in
   "service specification action specification list"*)
     # NP_NO_ACTION_SPECS: what an api key that can't see the actions gets back.
@@ -242,7 +247,7 @@ domain_model() {
   run bash "$SCRIPT"
 
   assert_success
-  assert_output --partial "WARNING: could not update endpoint exposer(s) that were already failed: link one [link-1]"
+  assert_output --partial "WARNING: the platform refused or failed the update of endpoint exposer(s) that were already failed: link one [link-1]"
 }
 
 @test "sync_exposer: an app without exposers deploys even when the update action isn't visible" {
@@ -278,4 +283,99 @@ domain_model() {
   assert_failure
   assert_output --partial "No action specification 'update-http-route-access-control' visible"
   assert_output --partial "Could not update endpoint exposer(s): one [svc-1]"
+}
+
+# --- review of PR #58: np failures never pass for success ------------------------------
+
+failed_link() {
+  domain_model
+  export NP_LINKS='[{"id":"link-1","name":"one","service_id":"svc-d","specification_id":"ls-1","status":"failed","attributes":{"routes":[{"path":"/a","scope":"prod"}]}}]'
+}
+
+@test "sync_exposer: a failed spec list fails the deploy step instead of skipping the sync" {
+  export NP_FAIL="service specification list"
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "could not list the service specifications"
+  [[ "$output" != *"skipping exposer sync"* ]]
+}
+
+@test "sync_exposer: a failed read of a legacy exposer fails the step, it never sends empty routes" {
+  export NP_FAIL="service read"
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "Could not read endpoint exposer one [svc-1]"
+  ! grep -q "service action create" "$NP_CALLS"
+}
+
+@test "sync_exposer: an action that can't be read fails fast instead of waiting for the timeout" {
+  export NP_FAIL="service action read"
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "could not read action action-new"
+  [[ "$(grep -c "service action read" "$NP_CALLS")" -eq 3 ]]
+}
+
+@test "sync_exposer: a failed pending-action list fails the step" {
+  export NP_FAIL="service action list"
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "Could not list the actions of endpoint exposer one [svc-1]"
+}
+
+@test "sync_exposer: a refused update of a failed link is only reported" {
+  failed_link
+  export NP_CREATE_STATUS=400
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "The platform refused the update of endpoint exposer link one [link-1]"
+  assert_output --partial "WARNING: the platform refused or failed the update"
+}
+
+@test "sync_exposer: an infra error updating a failed link fails the step" {
+  failed_link
+  export NP_CREATE_STATUS=503
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "Could not create an update action for endpoint exposer link one [link-1]"
+  assert_output --partial "Could not update endpoint exposer(s): link one [link-1]"
+}
+
+@test "sync_exposer: a refused update of an active link fails the step" {
+  domain_model
+  export NP_LINKS='[{"id":"link-1","name":"one","service_id":"svc-d","specification_id":"ls-1","status":"active","attributes":{"routes":[{"path":"/a","scope":"prod"}]}}]'
+  export NP_CREATE_STATUS=400
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "Could not update endpoint exposer(s): link one [link-1]"
+}
+
+@test "sync_exposer: a link that stored a single method sends it as methods" {
+  domain_model
+  export NP_LINKS='[{"id":"link-1","name":"one","service_id":"svc-d","specification_id":"ls-1","status":"active",
+    "attributes":{"path":"/old","method":"GET","scope":"prod","groups":[]}},
+    {"id":"link-2","name":"two","service_id":"svc-d","specification_id":"ls-1","status":"active",
+    "attributes":{"routes":[{"path":"/b","method":"POST","scope":"prod"}]}}]'
+
+  run bash "$SCRIPT"
+
+  assert_success
+  body=$(grep "link action create --linkId link-1" "$NP_CALLS" | sed 's/.*--body //; s/ --format json$//')
+  [[ "$(jq -c '.parameters' <<< "$body")" == '{"routes":[{"path":"/old","methods":["GET"],"scope":"prod","groups":[]}]}' ]]
+  body=$(grep "link action create --linkId link-2" "$NP_CALLS" | sed 's/.*--body //; s/ --format json$//')
+  [[ "$(jq -c '.parameters' <<< "$body")" == '{"routes":[{"path":"/b","scope":"prod","methods":["POST"]}]}' ]]
 }
