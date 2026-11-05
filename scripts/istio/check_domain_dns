@@ -17,7 +17,7 @@
 #
 # DOMAIN_DNS_CHECK: enforce (default) | warn (report, never fail) | off (skip)
 #
-# The agent images don't ship dig, so the check uses whatever is there
+# The agent images don't always ship dig, so the check uses whatever is there
 # (DNS_TOOL=auto, default): dig, else getent (the agent's resolver only, which
 # can't name the zone of a missing record), else it warns and skips: a check
 # that can't run doesn't block the service.
@@ -81,7 +81,7 @@ elif [[ "$VISIBILITY" == "public" ]]; then
 fi
 
 # resolve <name>: sets RESOLVED to the addresses (dig also lists the CNAME chain),
-# one per line. A query that gets no reply (dig exit 9: no server reachable) is not
+# one per line. A query that gets no reply (dig exits non-zero, e.g. 9: no server reachable) is not
 # an empty answer: it returns 1 with RESOLVE_ERROR set, so it is reported as such
 # instead of as a missing domain (or, with pipefail, aborting without a message).
 # getent can't tell a missing name from a resolver that doesn't answer (both exit 2).
