@@ -24,6 +24,15 @@
 main() {
   echo "=== Starting sync_exposer ==="
 
+  # require_results WHAT JSON: np can exit 0 with a body that isn't a list (an
+  # error object); read as "no results" it would skip the sync and pass the deploy.
+  require_results() {
+    if ! jq -e '.results | type == "array"' >/dev/null 2>&1 <<< "$2"; then
+      echo "Error: unexpected response listing $1: $2"
+      exit 1
+    fi
+  }
+
   APPLICATION_NRN=$(jq -r .application.nrn <<< "$CONTEXT")
   DEPLOYED_SCOPE_ID=$(jq -r '.scope.id // "" | tostring' <<< "$CONTEXT")
   DEPLOYED_SCOPE_SLUG=$(jq -r '.scope.slug // ""' <<< "$CONTEXT")
@@ -53,6 +62,7 @@ main() {
     echo "Error: could not list the service specifications visible to $APPLICATION_NRN: $SPECS"
     exit 1
   fi
+  require_results "the service specifications of $APPLICATION_NRN" "$SPECS"
   SERVICE_SPEC_ID=$(jq -r --arg slug "$SERVICE_SPECIFICATION_SLUG" 'first((.results // [])[] | select(.slug == $slug) | .id) // ""' <<< "$SPECS")
 
   # This override runs on every deploy of the scope, including apps that never
@@ -72,6 +82,7 @@ main() {
     echo "Error: could not list the services of $APPLICATION_NRN"
     exit 1
   fi
+  require_results "the services of $APPLICATION_NRN" "$SERVICES"
   # Legacy services only: a domain service holds no routes of its own, its links do.
   EXPOSERS=$(jq -c --arg spec "$SERVICE_SPEC_ID" --arg scope "$DEPLOYED_SCOPE_SLUG" '
         [.results[]
@@ -86,14 +97,15 @@ main() {
     echo "Error: could not list the links of $APPLICATION_NRN"
     exit 1
   fi
+  require_results "the links of $APPLICATION_NRN" "$LINKS"
   DOMAIN_SERVICE_IDS=$(jq -c --arg spec "$SERVICE_SPEC_ID" \
     '[.results[] | select(.specification_id == $spec and (.attributes.domain_name // "") != "") | .id]' <<< "$SERVICES")
   LINKS=$(jq -c --argjson services "$DOMAIN_SERVICE_IDS" --arg scope "$DEPLOYED_SCOPE_SLUG" '
-        [(.results // [])[]
+        [.results[]
           | select(.service_id as $id | $services | index($id))
           | select(.status != "deleted")
           | select($scope == "" or ([.attributes.routes[]?.scope, .attributes.scope] | index($scope)))]' \
-    <<< "${LINKS:-"{}"}")
+    <<< "$LINKS")
 
   if [[ "$(jq 'length' <<< "$EXPOSERS")" -eq 0 && "$(jq 'length' <<< "$LINKS")" -eq 0 ]]; then
     echo "No endpoint exposer routes to this scope, skipping exposer sync"

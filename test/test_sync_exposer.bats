@@ -28,6 +28,8 @@ printf '%s\n' "$*" >> "$NP_CALLS"
 # Like the np CLI in the controlplane-agent image (aws-0.7.0).
 if [[ " $* " == *" --specification-id "* ]]; then echo "Error: unknown flag: --specification-id" >&2; exit 1; fi
 [[ -n "${NP_FAIL:-}" && "$*" == "$NP_FAIL"* ]] && { echo '{"error": "request failed with status 503: unavailable"}'; exit 1; }
+# NP_BAD_BODY: the call exits 0 with an error body instead of a list.
+[[ -n "${NP_BAD_BODY:-}" && "$*" == "$NP_BAD_BODY"* ]] && { echo '{"error": "unauthorized"}'; exit 0; }
 # NP_CREATE_STATUS: action create answers this HTTP error, like the np CLI
 if [[ -n "${NP_CREATE_STATUS:-}" && "$*" == *"action create"* ]]; then
   echo "{\"error\": \"request failed with status $NP_CREATE_STATUS: rejected\"}"
@@ -115,7 +117,8 @@ teardown() {
 
   assert_success
   assert_output --partial "No endpoint exposer routes to this scope"
-  ! grep -q "service action create" "$NP_CALLS"
+  run grep "service action create" "$NP_CALLS"
+  assert_failure
 }
 
 @test "sync_exposer: sends the declared routes without the derived fields" {
@@ -378,4 +381,71 @@ failed_link() {
   [[ "$(jq -c '.parameters' <<< "$body")" == '{"routes":[{"path":"/old","methods":["GET"],"scope":"prod","groups":[]}]}' ]]
   body=$(grep "link action create --linkId link-2" "$NP_CALLS" | sed 's/.*--body //; s/ --format json$//')
   [[ "$(jq -c '.parameters' <<< "$body")" == '{"routes":[{"path":"/b","scope":"prod","methods":["POST"]}]}' ]]
+}
+
+@test "sync_exposer: a service list that answers without results fails instead of skipping the sync" {
+  export NP_BAD_BODY="service list"
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "unexpected response listing the services"
+}
+
+@test "sync_exposer: a link list that answers without results fails instead of skipping the sync" {
+  domain_model
+  export NP_BAD_BODY="link list"
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "unexpected response listing the links"
+}
+
+@test "sync_exposer: a specification list that answers without results fails instead of skipping the sync" {
+  export NP_BAD_BODY="service specification list"
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "unexpected response listing the service specifications"
+}
+
+@test "sync_exposer: a failed link list fails the deploy step" {
+  domain_model
+  export NP_FAIL="link list"
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "could not list the links"
+}
+
+@test "sync_exposer: a failed list of a link's action specifications fails the step of an active link" {
+  failed_link
+  export NP_LINKS="${NP_LINKS//failed/active}"
+  export NP_FAIL="link specification action specification list"
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "Could not list the actions of the link specification"
+}
+
+@test "sync_exposer: a platform refusal of a failed link is only reported, whatever the refusing status" {
+  failed_link
+  for status in 404 409 422; do
+    NP_CREATE_STATUS=$status run bash "$SCRIPT"
+    assert_success
+    assert_output --partial "The platform refused the update of endpoint exposer link one [link-1]"
+  done
+}
+
+@test "sync_exposer: a server error updating a failed link fails the step" {
+  failed_link
+  for status in 500 502; do
+    NP_CREATE_STATUS=$status run bash "$SCRIPT"
+    assert_failure
+    assert_output --partial "Could not update endpoint exposer(s): link one [link-1]"
+  done
 }
