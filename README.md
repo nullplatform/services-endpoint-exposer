@@ -26,6 +26,8 @@ This is the default when `AUTH_TYPE` is unset. Use it to expose specific endpoin
 
 In this mode `Authorized Groups` is ignored and can be left empty, and no `COGNITO_*`/`AVP_*` variables or `environment` dimension are needed. No RequestAuthentication is created or deleted.
 
+No JWT is validated, so groups can't be enforced: a route that declares them is still open to anyone. The create or update succeeds and logs a warning naming those routes, e.g. `WARNING: AUTH_TYPE=none does not authenticate requests: the authorized groups are ignored and these routes are open to anyone: /admin`. This does not fail the action or the deploy sync. To restrict such a route, set `AUTH_TYPE` to a scheme that validates tokens, or drop the groups so the route's configuration says what it does.
+
 ---
 
 ## Route configuration (developer UI)
