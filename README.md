@@ -73,7 +73,7 @@ Auth configuration is **not** part of the developer UI — it is set once at the
 
 ### Services created before the domain + links model
 
-Always fill `domain_name` (or `routes`) when creating a service: the platform accepts an empty service and leaves it `pending` with no action to run, and it can't be deleted until it reaches `active`, `failed`, `cancelled` or `archived`. A `routes` update on a service that has a `domain_name` is only stored: routes are served by the links of a domain service, so no `HTTPRoute` is created for them.
+Always fill `domain_name` (or `routes`) when creating a service. The platform has been seen accepting an empty service and leaving it `pending` with no action to run, and such a service can't be deleted until it reaches `active`, `failed`, `cancelled` or `archived`. A `routes` update on a service that has a `domain_name` is only stored: routes are served by the links of a domain service, so no `HTTPRoute` is created for them.
 
 Services that declare their routes inline (`routes` attribute, no `domain_name`) keep working: `entrypoint/service` runs them with `workflows/istio/legacy/`, and `sync_exposer` keeps their routes in sync on deploys. The spec requires `domain_name` or `routes` (`anyOf`), not `domain_name` alone: the platform copies the schema to the update action, and the deploy sync updates these services with `{routes}` only. Their routes are no longer editable from the UI; migrate them by creating a domain service per `(domain, visibility)` they serve and one link per route, then deleting the legacy service. While both exist, the legacy `HTTPRoute` keeps the traffic (it is older), so deleting it switches traffic to the links without a gap.
 
@@ -195,7 +195,7 @@ Each HTTPRoute is created in the namespace of the Services it routes to, so no R
 
 1. `NAMESPACE_OVERRIDE`, when set on the agent or channel (e.g. `{context.tags.namespace}`, the same value the scope agent uses).
 2. The namespace of the platform's Services whose selector has the scope's `scope_id`, searched across the cluster.
-3. `K8S_NAMESPACE` (default `nullplatform`), when the scope has no Service yet.
+3. `K8S_NAMESPACE` (default `nullplatform`), when the scope has no Service yet. Legacy services (routes on the service) always fall back to `nullplatform`.
 
 A `NAMESPACE_OVERRIDE` that arrives uninterpolated (it still contains `{` or `}`, e.g. a channel template written without `$`) is ignored with a warning. A scope with Services in two namespaces fails. If the Services can't be listed across the cluster, the action fails with kubectl's error: the default namespace is never assumed, since a route whose Service isn't seen there would be removed.
 
@@ -262,7 +262,7 @@ The `container-scope-override/` directory injects a `sync_exposer` step into sco
 
 The step fails the deploy when an np call fails (it can't tell what to update), when the update of an active link or service is refused or ends failed, and when an update times out. A link or service that was already failed and whose update the platform refuses or fails again (e.g. a link whose create never succeeded) is only reported.
 
-The step finds the exposer by its service specification slug: `http-route-access-control` (from `values.yaml`) unless the agent environment sets `EXPOSER_SERVICE_SPECIFICATION_SLUG`. A spec registered under another name (the `service_definition` module derives the slug from the spec name, e.g. `endpoint-exposer`) needs that variable set to its slug. Otherwise the step logs `WARNING: no service specification with slug ...` and skips the sync, and the deploy passes with the routes left on the previous backend.
+The step finds the exposer by its service specification slug: `http-route-access-control` (from `container-scope-override/values.yaml`) unless the agent environment sets `EXPOSER_SERVICE_SPECIFICATION_SLUG`. A spec registered under another name (the `service_definition` module derives the slug from the spec name, e.g. `endpoint-exposer`) needs that variable set to its slug. Otherwise the step logs `WARNING: no service specification with slug ...` and skips the sync, and the deploy passes with the routes left on the previous backend.
 
 This mechanism only activates when the scope agent entrypoint receives `--overrides-path=` pointing to the override directory. That flag must be set on the notification channel that fires for the **target scope** — i.e. the scope specification used by apps that expose routes through this service — not on the service channel from step 1 above.
 
