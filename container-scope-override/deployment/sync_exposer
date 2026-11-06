@@ -51,7 +51,7 @@ main() {
   if [[ -n "${EXPOSER_SERVICE_SPECIFICATION_SLUG:-}" ]]; then
     SPEC_SLUGS=$(jq -cn --arg slug "$EXPOSER_SERVICE_SPECIFICATION_SLUG" '[$slug]')
   else
-    SPEC_SLUGS=$(jq -cn --arg slug "$SERVICE_SPECIFICATION_SLUG" '[$slug, "endpoint-exposer"] | unique')
+    SPEC_SLUGS=$(jq -cn --arg slug "$SERVICE_SPECIFICATION_SLUG" '[$slug, "endpoint-exposer"] | map(select(. != "")) | unique')
   fi
 
   # Each update renders the exposer's routes, which takes a few seconds per scope.
@@ -67,8 +67,12 @@ main() {
     exit 1
   fi
   require_results "the service specifications of $APPLICATION_NRN" "$SPECS"
-  if ! MATCHED_SPECS=$(jq -c --argjson slugs "$SPEC_SLUGS" \
-    '[.results[] | select(.slug as $slug | $slugs | index($slug)) | {id, slug}]' <<< "$SPECS"); then
+  # A spec without an id would sync nothing and pass, so it fails like any malformed entry.
+  if ! MATCHED_SPECS=$(jq -c --argjson slugs "$SPEC_SLUGS" '
+    [.results[]
+     | if type == "object" then . else error("not an object") end
+     | select(.slug as $slug | $slugs | index($slug))
+     | if .id == null then error("no id") else {id, slug} end]' <<< "$SPECS"); then
     echo "Error: could not read the service specifications visible to $APPLICATION_NRN: $SPECS"
     exit 1
   fi
@@ -77,7 +81,8 @@ main() {
   # installed the exposer. A missing spec means there is nothing to sync, not a
   # failed deploy, but it is logged as a warning: a spec registered under another
   # slug looks the same and would leave its routes on the previous backend.
-  case "$(jq 'length' <<< "$MATCHED_SPECS")" in
+  # Distinct slugs: the same spec can be listed more than once (one per NRN level).
+  case "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" in
     0)
       echo "WARNING: no service specification with slug $(jq -r 'join(" or ")' <<< "$SPEC_SLUGS") visible to $APPLICATION_NRN, skipping exposer sync (if the exposer is installed under another slug, set EXPOSER_SERVICE_SPECIFICATION_SLUG in the agent environment)"
       return 0
@@ -85,7 +90,7 @@ main() {
     1) ;;
     *)
       # Syncing only one of them would leave the other's routes on the previous backend.
-      echo "Error: more than one exposer specification visible to $APPLICATION_NRN ($(jq -r 'map(.slug) | join(", ")' <<< "$MATCHED_SPECS")); set EXPOSER_SERVICE_SPECIFICATION_SLUG to the one this agent serves"
+      echo "Error: more than one exposer specification visible to $APPLICATION_NRN ($(jq -r 'map(.slug) | unique | join(", ")' <<< "$MATCHED_SPECS")); set EXPOSER_SERVICE_SPECIFICATION_SLUG to the one this agent serves"
       exit 1
       ;;
   esac

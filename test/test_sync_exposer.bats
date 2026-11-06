@@ -30,8 +30,6 @@ if [[ " $* " == *" --specification-id "* ]]; then echo "Error: unknown flag: --s
 [[ -n "${NP_FAIL:-}" && "$*" == "$NP_FAIL"* ]] && { echo '{"error": "request failed with status 503: unavailable"}'; exit 1; }
 # NP_BAD_BODY: the call exits 0 with an error body instead of a list.
 [[ -n "${NP_BAD_BODY:-}" && "$*" == "$NP_BAD_BODY"* ]] && { echo '{"error": "unauthorized"}'; exit 0; }
-# NP_NULL_RESULTS: the call exits 0 with a null list.
-[[ -n "${NP_NULL_RESULTS:-}" && "$*" == "$NP_NULL_RESULTS"* ]] && { echo '{"results": null}'; exit 0; }
 # NP_CREATE_STATUS: action create answers this HTTP error, like the np CLI
 if [[ -n "${NP_CREATE_STATUS:-}" && "$*" == *"action create"* ]]; then
   echo "{\"error\": \"request failed with status $NP_CREATE_STATUS: rejected\"}"
@@ -125,13 +123,55 @@ teardown() {
   [[ "$output" != *"skipping exposer sync"* ]]
 }
 
-@test "sync_exposer: a null list fails instead of skipping the sync" {
-  export NP_NULL_RESULTS="service list"
+@test "sync_exposer: EXPOSER_SERVICE_SPECIFICATION_SLUG can pick the service_definition spec when both are visible" {
+  export NP_SPECS='[{"id":"spec-1","slug":"http-route-access-control"},{"id":"spec-2","slug":"endpoint-exposer"}]'
+  export NP_SERVICES='[{"id":"svc-1","name":"one","specification_id":"spec-2","status":"active","attributes":{"routes":[{"scope":"prod"}]}}]'
+  export NP_SPEC_SLUG="endpoint-exposer"
+  export EXPOSER_SERVICE_SPECIFICATION_SLUG="endpoint-exposer"
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "Endpoint exposer one updated"
+  grep -q "serviceSpecificationId spec-2" "$NP_CALLS"
+}
+
+@test "sync_exposer: the same spec listed twice is one spec, not a conflict" {
+  export NP_SPECS='[{"id":"spec-1","slug":"http-route-access-control"},{"id":"spec-1","slug":"http-route-access-control"}]'
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "Endpoint exposer one updated"
+}
+
+@test "sync_exposer: an exposer spec without an id fails instead of syncing nothing" {
+  export NP_SPECS='[{"slug":"http-route-access-control"}]'
 
   run bash "$SCRIPT"
 
   assert_failure
-  assert_output --partial "unexpected response listing the services"
+  assert_output --partial "could not read the service specifications"
+}
+
+@test "sync_exposer: a null specification fails instead of skipping the sync" {
+  export NP_SPECS='[null]'
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "could not read the service specifications"
+  [[ "$output" != *"skipping exposer sync"* ]]
+}
+
+@test "sync_exposer: an empty values.yaml slug still finds the service_definition spec" {
+  export SERVICE_SPECIFICATION_SLUG=""
+  export NP_SPEC_SLUG="endpoint-exposer"
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "Spec: endpoint-exposer,"
 }
 
 @test "sync_exposer: a service whose routes are not a list fails instead of skipping the sync" {
