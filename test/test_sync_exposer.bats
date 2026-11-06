@@ -94,13 +94,39 @@ teardown() {
   assert_output --partial "Endpoint exposer one updated"
 }
 
-@test "sync_exposer: fails when both exposer specs are visible and none is configured" {
+@test "sync_exposer: fails when the app has exposers under both visible specs and none is configured" {
   export NP_SPECS='[{"id":"spec-1","slug":"http-route-access-control"},{"id":"spec-2","slug":"endpoint-exposer"}]'
+  export NP_SERVICES='[
+    {"id":"svc-1","name":"one","specification_id":"spec-1","status":"active","attributes":{"routes":[{"scope":"prod"}]}},
+    {"id":"svc-2","name":"two","specification_id":"spec-2","status":"active","attributes":{"routes":[{"scope":"prod"}]}}
+  ]'
 
   run bash "$SCRIPT"
 
   assert_failure
   assert_output --partial "more than one exposer specification"
+}
+
+@test "sync_exposer: an app without exposers deploys when both specs are visible" {
+  export NP_SPECS='[{"id":"spec-1","slug":"http-route-access-control"},{"id":"spec-2","slug":"endpoint-exposer"}]'
+  export NP_SERVICES='[{"id":"svc-9","name":"db","specification_id":"spec-db","status":"active","attributes":{}}]'
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "No endpoint exposer routes to this scope"
+}
+
+@test "sync_exposer: with both specs visible, the one the app's exposers use is synced" {
+  export NP_SPECS='[{"id":"spec-1","slug":"http-route-access-control"},{"id":"spec-2","slug":"endpoint-exposer"}]'
+  export NP_SERVICES='[{"id":"svc-1","name":"one","specification_id":"spec-2","status":"active","attributes":{"routes":[{"scope":"prod"}]}}]'
+  export NP_SPEC_SLUG="endpoint-exposer"
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "Endpoint exposer one updated"
+  grep -q "serviceSpecificationId spec-2" "$NP_CALLS"
 }
 
 @test "sync_exposer: EXPOSER_SERVICE_SPECIFICATION_SLUG picks one spec when both are visible" {

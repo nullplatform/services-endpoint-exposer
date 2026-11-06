@@ -82,31 +82,47 @@ main() {
   # failed deploy, but it is logged as a warning: a spec registered under another
   # slug looks the same and would leave its routes on the previous backend.
   # Distinct slugs: the same spec can be listed more than once (one per NRN level).
-  case "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" in
-    0)
-      echo "WARNING: no service specification with slug $(jq -r 'join(" or ")' <<< "$SPEC_SLUGS") visible to $APPLICATION_NRN, skipping exposer sync (if the exposer is installed under another slug, set EXPOSER_SERVICE_SPECIFICATION_SLUG in the agent environment)"
-      return 0
-      ;;
-    1) ;;
-    *)
-      # Syncing only one of them would leave the other's routes on the previous backend.
-      echo "Error: more than one exposer specification visible to $APPLICATION_NRN ($(jq -r 'map(.slug) | unique | join(", ")' <<< "$MATCHED_SPECS")); set EXPOSER_SERVICE_SPECIFICATION_SLUG to the one this agent serves"
-      exit 1
-      ;;
-  esac
-  SERVICE_SPEC_ID=$(jq -r '.[0].id' <<< "$MATCHED_SPECS")
-  SERVICE_SPECIFICATION_SLUG=$(jq -r '.[0].slug' <<< "$MATCHED_SPECS")
+  if [[ "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" -eq 0 ]]; then
+    echo "WARNING: no service specification with slug $(jq -r 'join(" or ")' <<< "$SPEC_SLUGS") visible to $APPLICATION_NRN, skipping exposer sync (if the exposer is installed under another slug, set EXPOSER_SERVICE_SPECIFICATION_SLUG in the agent environment)"
+    return 0
+  fi
 
-  # Exposers of the application that route to the deployed scope (all of them
-  # when the scope isn't known).
-  # Only --nrn: the np CLI in the controlplane-agent image (aws-0.7.0) rejects
-  # --specification-id, and an empty list here would silently skip the sync.
-  # The jq filter keeps only this spec's services.
+  # The application's services. Only --nrn: the np CLI in the controlplane-agent
+  # image (aws-0.7.0) rejects --specification-id, and an empty list here would
+  # silently skip the sync. The jq filters below keep the exposer spec's services.
   if ! SERVICES=$(np service list --nrn "$APPLICATION_NRN" --format json); then
     echo "Error: could not list the services of $APPLICATION_NRN"
     exit 1
   fi
   require_results "the services of $APPLICATION_NRN" "$SERVICES"
+
+  # With both slugs visible, the spec is the one the application's exposers use: an
+  # application without exposers (most of the org) has nothing to sync and must not
+  # fail its deploy.
+  if [[ "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" -gt 1 ]]; then
+    if ! MATCHED_SPECS=$(jq -c --argjson specs "$MATCHED_SPECS" \
+      '[.results[].specification_id] as $used | $specs | map(select(.id as $id | $used | index($id)))' <<< "$SERVICES"); then
+      echo "Error: could not read the services of $APPLICATION_NRN: $SERVICES"
+      exit 1
+    fi
+    case "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" in
+      0)
+        echo "No endpoint exposer routes to this scope, skipping exposer sync"
+        return 0
+        ;;
+      1) ;;
+      *)
+        # Syncing only one of them would leave the other's routes on the previous backend.
+        echo "Error: the application has exposers under more than one exposer specification ($(jq -r 'map(.slug) | unique | join(", ")' <<< "$MATCHED_SPECS")); set EXPOSER_SERVICE_SPECIFICATION_SLUG to the one this agent serves"
+        exit 1
+        ;;
+    esac
+  fi
+  SERVICE_SPEC_ID=$(jq -r '.[0].id' <<< "$MATCHED_SPECS")
+  SERVICE_SPECIFICATION_SLUG=$(jq -r '.[0].slug' <<< "$MATCHED_SPECS")
+
+  # Exposers of the application that route to the deployed scope (all of them
+  # when the scope isn't known).
   # Legacy services only: a domain service holds no routes of its own, its links do.
   # A filter that fails on a malformed service or link would otherwise look like
   # "nothing to sync" below.
