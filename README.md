@@ -26,6 +26,8 @@ This is the default when `AUTH_TYPE` is unset. Use it to expose specific endpoin
 
 In this mode `Authorized Groups` is ignored and can be left empty, and no `COGNITO_*`/`AVP_*` variables or `environment` dimension are needed. No RequestAuthentication is created or deleted.
 
+No JWT is validated, so groups can't be enforced: a route that declares them is still open to anyone. The create or update succeeds and logs a warning naming those routes, e.g. `WARNING: AUTH_TYPE=none does not authenticate requests: the authorized groups are ignored and these routes are open to anyone: /admin`. This does not fail the action or the deploy sync. To restrict such a route, set `AUTH_TYPE` to a scheme that validates tokens, or drop the groups so the route's configuration says what it does.
+
 ---
 
 ## Route configuration (developer UI)
@@ -48,7 +50,7 @@ The domain must exist in DNS wherever it is hosted (Route 53, GoDaddy, Cloudflar
 - **public** services are checked against public resolvers (`PUBLIC_DNS_RESOLVERS`, default `1.1.1.1 8.8.8.8`), so the check sees what internet clients see and not a split-horizon private view of the same zone. If none replies, the agent's resolver is used.
 - **private** services are checked with the agent's own resolver: the agent runs inside the client's network, so it sees the internal DNS.
 
-A domain that doesn't resolve fails the create, telling apart a domain that isn't registered (only the TLD answers) from a zone that lacks the record. A domain that resolves but not to the gateway's address only warns: a CDN or proxy may forward to it, but usually requests would never reach the routes. A resolver that doesn't answer is reported as such (dig exit 9), never as a missing domain. `DOMAIN_DNS_CHECK=warn` reports without failing, `off` skips the check.
+A domain that doesn't resolve fails the create, telling apart a domain that isn't registered (only the TLD answers) from a zone that lacks the record. A domain that resolves but not to the gateway's address only warns: a CDN or proxy may forward to it, but usually requests would never reach the routes. A resolver that doesn't answer is reported as such (dig exits non-zero, e.g. 9 when no server is reachable), never as a missing domain. `DOMAIN_DNS_CHECK=warn` reports without failing, `off` skips the check. With `enforce` the record must exist before the service is created (a zone without a wildcard record needs the entry first); `warn` lets the create go through and reports the missing record.
 
 The check uses `dig`. The agent images don't always ship it: without `dig` it uses `getent ahosts`, which only asks the agent's resolver (also for public domains) and can't tell a missing record from a resolver that doesn't answer, nor name the zone. With neither, it warns and skips the check, even with `enforce`.
 
@@ -61,7 +63,7 @@ nullplatform allows a single link per application and dimensions, so the link ca
 | **Path** | Path on the service's domain. Supports exact (`/api/users`), parameterized (`/api/users/:id`) and wildcard (`/api/users/*`). Each path can appear once per link |
 | **Verbs** | Optional, `ALL` (any method) by default. Pick HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) to expose only those. `ALL` overrides any other verb selected on the same route |
 | **Scope** | Optional. Slug of the linking application's scope that receives the traffic. When empty, the agent picks (once for the whole link) the application's scope in the link's dimensions whose visibility matches the service (`public` ↔ reachability `public`, `private` ↔ anything else) and that has a Kubernetes Service to route to. A single active match is used, even next to inactive ones; with no active match, a single inactive one is used. Its slug is stored on the link. Several active matches, or several inactive ones and no active one, fail and ask for the slug, so the link never guesses between scopes. No match fails too. The form can't list the scopes: the platform doesn't pass them to the link context |
-| **Authorized Groups** | Groups allowed to call the path. Required with `aws-cognito`: create and update fail without them. Optional and ignored with `AUTH_TYPE=none` |
+| **Authorized Groups** | Groups allowed to call the path. Required with `aws-cognito`: create and update fail without them. Ignored with `AUTH_TYPE=none`: the route is open to anyone, and create/update log a `WARNING` naming the routes whose groups were dropped |
 
 Each link gets its own `HTTPRoute` (hostname = the service's domain, one rule per route) and `AuthorizationPolicies`, labeled `nullplatform.com/link-id`; unlink deletes exactly those. A path + method can be exposed by a single link per domain: a link with a route that would overlap another link fails instead of being silently shadowed (Gateway API gives the oldest route the traffic).
 
@@ -70,6 +72,8 @@ Updating a link replaces its `HTTPRoute` in place and prunes the policies it no 
 Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below). The domain + links model supports `AUTH_TYPE=aws-cognito` and `none` (`aws-avp` is not supported yet).
 
 ### Services created before the domain + links model
+
+Always fill `domain_name` (or `routes`) when creating a service. The platform has been seen accepting an empty service and leaving it `pending` with no action to run, and such a service can't be deleted until it reaches `active`, `failed`, `cancelled` or `archived`. A `routes` update on a service that has a `domain_name` is only stored: routes are served by the links of a domain service, so no `HTTPRoute` is created for them.
 
 Services that declare their routes inline (`routes` attribute, no `domain_name`) keep working: `entrypoint/service` runs them with `workflows/istio/legacy/`, and `sync_exposer` keeps their routes in sync on deploys. The spec requires `domain_name` or `routes` (`anyOf`), not `domain_name` alone: the platform copies the schema to the update action, and the deploy sync updates these services with `{routes}` only. Their routes are no longer editable from the UI; migrate them by creating a domain service per `(domain, visibility)` they serve and one link per route, then deleting the legacy service. While both exist, the legacy `HTTPRoute` keeps the traffic (it is older), so deleting it switches traffic to the links without a gap.
 
@@ -191,7 +195,7 @@ Each HTTPRoute is created in the namespace of the Services it routes to, so no R
 
 1. `NAMESPACE_OVERRIDE`, when set on the agent or channel (e.g. `{context.tags.namespace}`, the same value the scope agent uses).
 2. The namespace of the platform's Services whose selector has the scope's `scope_id`, searched across the cluster.
-3. `nullplatform` (or `K8S_NAMESPACE`), when the scope has no Service yet.
+3. `K8S_NAMESPACE` (default `nullplatform`), when the scope has no Service yet. Legacy services (routes on the service) ignore `K8S_NAMESPACE` here and always use `nullplatform`.
 
 A `NAMESPACE_OVERRIDE` that arrives uninterpolated (it still contains `{` or `}`, e.g. a channel template written without `$`) is ignored with a warning. A scope with Services in two namespaces fails. If the Services can't be listed across the cluster, the action fails with kubectl's error: the default namespace is never assumed, since a route whose Service isn't seen there would be removed.
 
@@ -201,7 +205,7 @@ All the routes of one link (or of one legacy service) must point to scopes in th
 
 Requirements:
 
-- **RBAC**: the agent needs cluster-wide `get`/`list` on `services` and `httproutes`, and cluster-wide `create`, `patch` and `delete` on `httproutes` (unlink, service delete and the cleanup of an HTTPRoute that moved delete by label in every namespace). Missing cluster-wide access is handled the same way everywhere: the action fails with kubectl's error. It is never worked around with a single namespace, which could remove a working route or miss a conflict. For example:
+- **RBAC**: the agent needs cluster-wide `list` on `services`, and cluster-wide `get`, `list`, `create`, `patch` and `delete` on `httproutes` (unlink, service delete and the cleanup of an HTTPRoute that moved namespace delete HTTPRoutes in every namespace). Missing cluster-wide access is handled the same way everywhere: the action fails with kubectl's error. It is never worked around with a single namespace, which could remove a working route or miss a conflict. For example:
 
   ```yaml
   apiVersion: rbac.authorization.k8s.io/v1
@@ -211,10 +215,10 @@ Requirements:
   rules:
     - apiGroups: [""]
       resources: ["services"]
-      verbs: ["get", "list"]
+      verbs: ["list"]
     - apiGroups: ["gateway.networking.k8s.io"]
       resources: ["httproutes"]
-      verbs: ["get", "list", "create", "patch", "update", "delete"]
+      verbs: ["get", "list", "create", "patch", "delete"]
   ---
   apiVersion: rbac.authorization.k8s.io/v1
   kind: ClusterRoleBinding
@@ -233,7 +237,7 @@ Requirements:
   The AuthorizationPolicies and RequestAuthentications stay in the gateway namespace, as before.
 - **Gateway listeners** must accept routes from the applications' namespaces: `allowedRoutes.namespaces.from: All`, or `Selector` with the applications' namespaces labeled to match it. The Gateway API default, `Same`, only accepts routes from the gateway's own namespace, so an HTTPRoute next to the app stays unaccepted and its paths answer 404.
 
-> **Upgrade note:** installations whose agent only has a namespaced Role (e.g. on `nullplatform`) can no longer create or update links, create or delete domain services, or delete legacy services: these actions now fail until the agent gets the cluster-wide access above.
+> **Upgrade note:** installations whose agent only has a namespaced Role (e.g. on `nullplatform`) can no longer create, update or delete domain services, links (unlink included) or legacy services, and the deploy sync fails the scope deploys that have active exposers: all of these fail until the agent gets the cluster-wide access above.
 
 #### Example — OpenTofu agent module
 
@@ -257,6 +261,8 @@ module "agent" {
 The `container-scope-override/` directory injects a `sync_exposer` step into scope deploy workflows (initial, blue_green, switch_traffic, finalize, rollback, delete). This keeps HTTPRoutes in sync when the underlying Kubernetes service names change during a blue/green deploy: it re-runs the update action of every active or failed link of the application with a route on the scope being deployed (and the update of legacy services). Failed ones are included because a link left failed by a refused update still has its previous HTTPRoute, which would keep pointing at a deleted Service.
 
 The step fails the deploy when an np call fails (it can't tell what to update), when the update of an active link or service is refused or ends failed, and when an update times out. A link or service that was already failed and whose update the platform refuses or fails again (e.g. a link whose create never succeeded) is only reported.
+
+The step finds the exposer by its service specification slug, which depends on how the spec was registered: `endpoint-exposer` through the `service_definition` module (`specs/install`, which derives it from the spec name) and `http-route-access-control` from `specs/service-spec.json.tpl` (the default in `container-scope-override/values.yaml`). Both are looked up. The same spec listed more than once counts as one. If both specs are visible, the step syncs the one the application's exposers use, and an application without exposers deploys as usual. Only an application with exposers under both specs fails, asking for `EXPOSER_SERVICE_SPECIFICATION_SLUG` in the agent environment, which names the one to sync; set it too for a spec registered under any other slug. Without a matching spec the step logs `WARNING: no service specification with slug ...` and skips the sync, and the deploy passes: an application that never installed the exposer goes through here on every deploy.
 
 This mechanism only activates when the scope agent entrypoint receives `--overrides-path=` pointing to the override directory. That flag must be set on the notification channel that fires for the **target scope** — i.e. the scope specification used by apps that expose routes through this service — not on the service channel from step 1 above.
 

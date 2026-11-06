@@ -24,6 +24,15 @@
 main() {
   echo "=== Starting sync_exposer ==="
 
+  # require_results WHAT JSON: np can exit 0 with a body that isn't a list (an
+  # error object); read as "no results" it would skip the sync and pass the deploy.
+  require_results() {
+    if ! jq -e '.results | type == "array"' >/dev/null 2>&1 <<< "$2"; then
+      echo "Error: unexpected response listing $1: $2"
+      exit 1
+    fi
+  }
+
   APPLICATION_NRN=$(jq -r .application.nrn <<< "$CONTEXT")
   DEPLOYED_SCOPE_ID=$(jq -r '.scope.id // "" | tostring' <<< "$CONTEXT")
   DEPLOYED_SCOPE_SLUG=$(jq -r '.scope.slug // ""' <<< "$CONTEXT")
@@ -35,17 +44,21 @@ main() {
     DEPLOYED_SCOPE_SLUG=$(jq -r '.slug // ""' <<< "$SCOPE_JSON")
   fi
 
-  # values.yaml ships the slug the spec gets when registered from this repo
-  # ("http-route-access-control"). Installations that registered it under another
-  # name (e.g. "endpoint-exposer") set EXPOSER_SERVICE_SPECIFICATION_SLUG in the
-  # agent environment; values.yaml configuration would otherwise shadow it.
-  SERVICE_SPECIFICATION_SLUG="${EXPOSER_SERVICE_SPECIFICATION_SLUG:-$SERVICE_SPECIFICATION_SLUG}"
+  # The spec's slug depends on how it was registered: "http-route-access-control"
+  # (values.yaml) from specs/service-spec.json.tpl, "endpoint-exposer" through the
+  # service_definition module (specs/install), which derives it from the name.
+  # Both are looked up unless EXPOSER_SERVICE_SPECIFICATION_SLUG names one.
+  if [[ -n "${EXPOSER_SERVICE_SPECIFICATION_SLUG:-}" ]]; then
+    SPEC_SLUGS=$(jq -cn --arg slug "$EXPOSER_SERVICE_SPECIFICATION_SLUG" '[$slug]')
+  else
+    SPEC_SLUGS=$(jq -cn --arg slug "$SERVICE_SPECIFICATION_SLUG" '[$slug, "endpoint-exposer"] | map(select(. != "")) | unique')
+  fi
 
   # Each update renders the exposer's routes, which takes a few seconds per scope.
   ACTION_TIMEOUT_SECONDS="${EXPOSER_SYNC_TIMEOUT_SECONDS:-600}"
   POLL_SECONDS="${EXPOSER_SYNC_POLL_SECONDS:-5}"
 
-  echo "Spec: $SERVICE_SPECIFICATION_SLUG, application: $APPLICATION_NRN, scope: ${DEPLOYED_SCOPE_SLUG:-unknown}"
+  echo "Spec: $(jq -r 'join(" or ")' <<< "$SPEC_SLUGS"), application: $APPLICATION_NRN, scope: ${DEPLOYED_SCOPE_SLUG:-unknown}"
 
   # A failed list is not "the exposer isn't installed": skipping the sync would leave
   # the routes on the previous backend.
@@ -53,31 +66,74 @@ main() {
     echo "Error: could not list the service specifications visible to $APPLICATION_NRN: $SPECS"
     exit 1
   fi
-  SERVICE_SPEC_ID=$(jq -r --arg slug "$SERVICE_SPECIFICATION_SLUG" 'first((.results // [])[] | select(.slug == $slug) | .id) // ""' <<< "$SPECS")
+  require_results "the service specifications of $APPLICATION_NRN" "$SPECS"
+  # A spec without an id would sync nothing and pass, so it fails like any malformed entry.
+  if ! MATCHED_SPECS=$(jq -c --argjson slugs "$SPEC_SLUGS" '
+    [.results[]
+     | if type == "object" then . else error("not an object") end
+     | select(.slug as $slug | $slugs | index($slug))
+     | if .id == null then error("no id") else {id, slug} end]' <<< "$SPECS"); then
+    echo "Error: could not read the service specifications visible to $APPLICATION_NRN: $SPECS"
+    exit 1
+  fi
 
   # This override runs on every deploy of the scope, including apps that never
   # installed the exposer. A missing spec means there is nothing to sync, not a
-  # failed deploy.
-  if [[ -z "$SERVICE_SPEC_ID" ]]; then
-    echo "No service specification with slug '$SERVICE_SPECIFICATION_SLUG' visible to $APPLICATION_NRN, skipping exposer sync"
+  # failed deploy, but it is logged as a warning: a spec registered under another
+  # slug looks the same and would leave its routes on the previous backend.
+  # Distinct slugs: the same spec can be listed more than once (one per NRN level).
+  if [[ "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" -eq 0 ]]; then
+    echo "WARNING: no service specification with slug $(jq -r 'join(" or ")' <<< "$SPEC_SLUGS") visible to $APPLICATION_NRN, skipping exposer sync (if the exposer is installed under another slug, set EXPOSER_SERVICE_SPECIFICATION_SLUG in the agent environment)"
     return 0
   fi
 
-  # Exposers of the application that route to the deployed scope (all of them
-  # when the scope isn't known).
-  # Only --nrn: the np CLI in the controlplane-agent image (aws-0.7.0) rejects
-  # --specification-id, and an empty list here would silently skip the sync.
-  # The jq filter keeps only this spec's services.
+  # The application's services. Only --nrn: the np CLI in the controlplane-agent
+  # image (aws-0.7.0) rejects --specification-id, and an empty list here would
+  # silently skip the sync. The jq filters below keep the exposer spec's services.
   if ! SERVICES=$(np service list --nrn "$APPLICATION_NRN" --format json); then
     echo "Error: could not list the services of $APPLICATION_NRN"
     exit 1
   fi
+  require_results "the services of $APPLICATION_NRN" "$SERVICES"
+
+  # With both slugs visible, the spec is the one the application's exposers use: an
+  # application without exposers (most of the org) has nothing to sync and must not
+  # fail its deploy.
+  if [[ "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" -gt 1 ]]; then
+    if ! MATCHED_SPECS=$(jq -c --argjson specs "$MATCHED_SPECS" \
+      '[.results[].specification_id] as $used | $specs | map(select(.id as $id | $used | index($id)))' <<< "$SERVICES"); then
+      echo "Error: could not read the services of $APPLICATION_NRN: $SERVICES"
+      exit 1
+    fi
+    case "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" in
+      0)
+        echo "No endpoint exposer routes to this scope, skipping exposer sync"
+        return 0
+        ;;
+      1) ;;
+      *)
+        # Syncing only one of them would leave the other's routes on the previous backend.
+        echo "Error: the application has exposers under more than one exposer specification ($(jq -r 'map(.slug) | unique | join(", ")' <<< "$MATCHED_SPECS")); set EXPOSER_SERVICE_SPECIFICATION_SLUG to the one this agent serves"
+        exit 1
+        ;;
+    esac
+  fi
+  SERVICE_SPEC_ID=$(jq -r '.[0].id' <<< "$MATCHED_SPECS")
+  SERVICE_SPECIFICATION_SLUG=$(jq -r '.[0].slug' <<< "$MATCHED_SPECS")
+
+  # Exposers of the application that route to the deployed scope (all of them
+  # when the scope isn't known).
   # Legacy services only: a domain service holds no routes of its own, its links do.
-  EXPOSERS=$(jq -c --arg spec "$SERVICE_SPEC_ID" --arg scope "$DEPLOYED_SCOPE_SLUG" '
+  # A filter that fails on a malformed service or link would otherwise look like
+  # "nothing to sync" below.
+  if ! EXPOSERS=$(jq -c --arg spec "$SERVICE_SPEC_ID" --arg scope "$DEPLOYED_SCOPE_SLUG" '
         [.results[]
           | select(.specification_id == $spec)
           | select((.attributes.domain_name // "") == "")
-          | select($scope == "" or ([.attributes.routes[]?.scope] | index($scope)))]' <<< "$SERVICES")
+          | select($scope == "" or ([(.attributes.routes // [])[].scope] | index($scope)))]' <<< "$SERVICES"); then
+    echo "Error: could not read the services of $APPLICATION_NRN: $SERVICES"
+    exit 1
+  fi
 
   # Links of the application on this spec's services with a route on the deployed
   # scope. Every route stores its resolved scope; links created before the routes
@@ -86,14 +142,21 @@ main() {
     echo "Error: could not list the links of $APPLICATION_NRN"
     exit 1
   fi
-  DOMAIN_SERVICE_IDS=$(jq -c --arg spec "$SERVICE_SPEC_ID" \
-    '[.results[] | select(.specification_id == $spec and (.attributes.domain_name // "") != "") | .id]' <<< "$SERVICES")
-  LINKS=$(jq -c --argjson services "$DOMAIN_SERVICE_IDS" --arg scope "$DEPLOYED_SCOPE_SLUG" '
-        [(.results // [])[]
+  require_results "the links of $APPLICATION_NRN" "$LINKS"
+  if ! DOMAIN_SERVICE_IDS=$(jq -c --arg spec "$SERVICE_SPEC_ID" \
+    '[.results[] | select(.specification_id == $spec and (.attributes.domain_name // "") != "") | .id]' <<< "$SERVICES"); then
+    echo "Error: could not read the services of $APPLICATION_NRN: $SERVICES"
+    exit 1
+  fi
+  if ! LINKS=$(jq -c --argjson services "$DOMAIN_SERVICE_IDS" --arg scope "$DEPLOYED_SCOPE_SLUG" '
+        [.results[]
           | select(.service_id as $id | $services | index($id))
           | select(.status != "deleted")
-          | select($scope == "" or ([.attributes.routes[]?.scope, .attributes.scope] | index($scope)))]' \
-    <<< "${LINKS:-"{}"}")
+          | select($scope == "" or ([(.attributes.routes // [])[].scope, .attributes.scope] | index($scope)))]' \
+    <<< "$LINKS"); then
+    echo "Error: could not read the links of $APPLICATION_NRN: $LINKS"
+    exit 1
+  fi
 
   if [[ "$(jq 'length' <<< "$EXPOSERS")" -eq 0 && "$(jq 'length' <<< "$LINKS")" -eq 0 ]]; then
     echo "No endpoint exposer routes to this scope, skipping exposer sync"
