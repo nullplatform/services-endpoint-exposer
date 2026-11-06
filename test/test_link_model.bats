@@ -703,6 +703,26 @@ routes_context() {
   [[ "$output" != *"/a, /b"* ]]
 }
 
+@test "build_link_context: AUTH_TYPE=none warns about groups given as a comma string" {
+  export AUTH_TYPE=none
+  routes_context '[{"path": "/a", "groups": "admin,ops", "scope": "s"}, {"path": "/b", "groups": " , ", "scope": "s"}]'
+
+  run bash "$SERVICE_PATH/scripts/istio/build_link_context"
+
+  assert_success
+  assert_output --partial "open to anyone: /a"
+  [[ "$output" != *"/a, /b"* ]]
+}
+
+@test "build_link_context: aws-cognito with groups does not warn about open routes" {
+  routes_context '[{"path": "/a", "groups": ["g"], "scope": "s"}]'
+
+  run bash "$SERVICE_PATH/scripts/istio/build_link_context"
+
+  assert_success
+  [[ "$output" != *"authorized groups are ignored"* ]]
+}
+
 @test "build_link_context: AUTH_TYPE=none without groups does not warn" {
   export AUTH_TYPE=none
   routes_context '[{"path": "/a", "scope": "s"}]'
