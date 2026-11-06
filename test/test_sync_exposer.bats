@@ -78,6 +78,8 @@ teardown() {
   run bash "$SCRIPT"
 
   assert_success
+  assert_output --partial "WARNING: no service specification with slug"
+  assert_output --partial "EXPOSER_SERVICE_SPECIFICATION_SLUG"
   assert_output --partial "skipping exposer sync"
 }
 

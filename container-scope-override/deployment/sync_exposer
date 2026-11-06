@@ -67,9 +67,10 @@ main() {
 
   # This override runs on every deploy of the scope, including apps that never
   # installed the exposer. A missing spec means there is nothing to sync, not a
-  # failed deploy.
+  # failed deploy, but it is logged as a warning: a spec registered under another
+  # slug looks the same and would leave its routes on the previous backend.
   if [[ -z "$SERVICE_SPEC_ID" ]]; then
-    echo "No service specification with slug '$SERVICE_SPECIFICATION_SLUG' visible to $APPLICATION_NRN, skipping exposer sync"
+    echo "WARNING: no service specification with slug '$SERVICE_SPECIFICATION_SLUG' visible to $APPLICATION_NRN, skipping exposer sync (if the exposer is installed under another slug, set EXPOSER_SERVICE_SPECIFICATION_SLUG in the agent environment)"
     return 0
   fi
 
