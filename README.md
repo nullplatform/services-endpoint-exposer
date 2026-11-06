@@ -48,7 +48,7 @@ The domain must exist in DNS wherever it is hosted (Route 53, GoDaddy, Cloudflar
 - **public** services are checked against public resolvers (`PUBLIC_DNS_RESOLVERS`, default `1.1.1.1 8.8.8.8`), so the check sees what internet clients see and not a split-horizon private view of the same zone. If none replies, the agent's resolver is used.
 - **private** services are checked with the agent's own resolver: the agent runs inside the client's network, so it sees the internal DNS.
 
-A domain that doesn't resolve fails the create, telling apart a domain that isn't registered (only the TLD answers) from a zone that lacks the record. A domain that resolves but not to the gateway's address only warns: a CDN or proxy may forward to it, but usually requests would never reach the routes. A resolver that doesn't answer is reported as such (dig exits non-zero, e.g. 9 when no server is reachable), never as a missing domain. `DOMAIN_DNS_CHECK=warn` reports without failing, `off` skips the check.
+A domain that doesn't resolve fails the create, telling apart a domain that isn't registered (only the TLD answers) from a zone that lacks the record. A domain that resolves but not to the gateway's address only warns: a CDN or proxy may forward to it, but usually requests would never reach the routes. A resolver that doesn't answer is reported as such (dig exits non-zero, e.g. 9 when no server is reachable), never as a missing domain. `DOMAIN_DNS_CHECK=warn` reports without failing, `off` skips the check. With `enforce` the record must exist before the service is created (a zone without a wildcard record needs the entry first); `warn` lets the create go through and reports the missing record.
 
 The check uses `dig`. The agent images don't always ship it: without `dig` it uses `getent ahosts`, which only asks the agent's resolver (also for public domains) and can't tell a missing record from a resolver that doesn't answer, nor name the zone. With neither, it warns and skips the check, even with `enforce`.
 
@@ -70,6 +70,8 @@ Updating a link replaces its `HTTPRoute` in place and prunes the policies it no 
 Auth configuration is **not** part of the developer UI — it is set once at the infrastructure level via agent environment variables (see below). The domain + links model supports `AUTH_TYPE=aws-cognito` and `none` (`aws-avp` is not supported yet).
 
 ### Services created before the domain + links model
+
+Always fill `domain_name` (or `routes`) when creating a service: the platform accepts an empty service and leaves it `pending` with no action to run, and it can't be deleted until it reaches `active`, `failed`, `cancelled` or `archived`. A `routes` update on a service that has a `domain_name` is only stored: routes are served by the links of a domain service, so no `HTTPRoute` is created for them.
 
 Services that declare their routes inline (`routes` attribute, no `domain_name`) keep working: `entrypoint/service` runs them with `workflows/istio/legacy/`, and `sync_exposer` keeps their routes in sync on deploys. The spec requires `domain_name` or `routes` (`anyOf`), not `domain_name` alone: the platform copies the schema to the update action, and the deploy sync updates these services with `{routes}` only. Their routes are no longer editable from the UI; migrate them by creating a domain service per `(domain, visibility)` they serve and one link per route, then deleting the legacy service. While both exist, the legacy `HTTPRoute` keeps the traffic (it is older), so deleting it switches traffic to the links without a gap.
 
