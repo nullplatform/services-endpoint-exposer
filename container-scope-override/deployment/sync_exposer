@@ -85,11 +85,16 @@ main() {
   fi
   require_results "the services of $APPLICATION_NRN" "$SERVICES"
   # Legacy services only: a domain service holds no routes of its own, its links do.
-  EXPOSERS=$(jq -c --arg spec "$SERVICE_SPEC_ID" --arg scope "$DEPLOYED_SCOPE_SLUG" '
+  # A filter that fails on a malformed service or link would otherwise look like
+  # "nothing to sync" below.
+  if ! EXPOSERS=$(jq -c --arg spec "$SERVICE_SPEC_ID" --arg scope "$DEPLOYED_SCOPE_SLUG" '
         [.results[]
           | select(.specification_id == $spec)
           | select((.attributes.domain_name // "") == "")
-          | select($scope == "" or ([.attributes.routes[]?.scope] | index($scope)))]' <<< "$SERVICES")
+          | select($scope == "" or ([.attributes.routes[]?.scope] | index($scope)))]' <<< "$SERVICES"); then
+    echo "Error: could not read the services of $APPLICATION_NRN: $SERVICES"
+    exit 1
+  fi
 
   # Links of the application on this spec's services with a route on the deployed
   # scope. Every route stores its resolved scope; links created before the routes
@@ -99,14 +104,20 @@ main() {
     exit 1
   fi
   require_results "the links of $APPLICATION_NRN" "$LINKS"
-  DOMAIN_SERVICE_IDS=$(jq -c --arg spec "$SERVICE_SPEC_ID" \
-    '[.results[] | select(.specification_id == $spec and (.attributes.domain_name // "") != "") | .id]' <<< "$SERVICES")
-  LINKS=$(jq -c --argjson services "$DOMAIN_SERVICE_IDS" --arg scope "$DEPLOYED_SCOPE_SLUG" '
+  if ! DOMAIN_SERVICE_IDS=$(jq -c --arg spec "$SERVICE_SPEC_ID" \
+    '[.results[] | select(.specification_id == $spec and (.attributes.domain_name // "") != "") | .id]' <<< "$SERVICES"); then
+    echo "Error: could not read the services of $APPLICATION_NRN: $SERVICES"
+    exit 1
+  fi
+  if ! LINKS=$(jq -c --argjson services "$DOMAIN_SERVICE_IDS" --arg scope "$DEPLOYED_SCOPE_SLUG" '
         [.results[]
           | select(.service_id as $id | $services | index($id))
           | select(.status != "deleted")
           | select($scope == "" or ([.attributes.routes[]?.scope, .attributes.scope] | index($scope)))]' \
-    <<< "$LINKS")
+    <<< "$LINKS"); then
+    echo "Error: could not read the links of $APPLICATION_NRN: $LINKS"
+    exit 1
+  fi
 
   if [[ "$(jq 'length' <<< "$EXPOSERS")" -eq 0 && "$(jq 'length' <<< "$LINKS")" -eq 0 ]]; then
     echo "No endpoint exposer routes to this scope, skipping exposer sync"

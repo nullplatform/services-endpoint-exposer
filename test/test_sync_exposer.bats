@@ -404,6 +404,27 @@ failed_link() {
   assert_output --partial "unexpected response listing the links"
 }
 
+@test "sync_exposer: a malformed service fails instead of skipping the sync" {
+  export NP_SERVICES='[{"id":"svc-1","name":"one","specification_id":"spec-1","status":"active","attributes":{"routes":["prod"]}}]'
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "could not read the services"
+  [[ "$output" != *"skipping exposer sync"* ]]
+}
+
+@test "sync_exposer: a malformed link fails instead of skipping the sync" {
+  domain_model
+  export NP_LINKS='[{"id":"link-1","service_id":"svc-d","status":"active","attributes":{"routes":["prod"]}}]'
+
+  run bash "$SCRIPT"
+
+  assert_failure
+  assert_output --partial "could not read the links"
+  [[ "$output" != *"skipping exposer sync"* ]]
+}
+
 @test "sync_exposer: a specification list that answers without results fails instead of skipping the sync" {
   export NP_BAD_BODY="service specification list"
 
