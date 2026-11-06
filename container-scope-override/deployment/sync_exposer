@@ -44,17 +44,21 @@ main() {
     DEPLOYED_SCOPE_SLUG=$(jq -r '.slug // ""' <<< "$SCOPE_JSON")
   fi
 
-  # values.yaml ships the slug the spec gets when registered from this repo
-  # ("http-route-access-control"). Installations that registered it under another
-  # name (e.g. "endpoint-exposer") set EXPOSER_SERVICE_SPECIFICATION_SLUG in the
-  # agent environment; values.yaml configuration would otherwise shadow it.
-  SERVICE_SPECIFICATION_SLUG="${EXPOSER_SERVICE_SPECIFICATION_SLUG:-$SERVICE_SPECIFICATION_SLUG}"
+  # The spec's slug depends on how it was registered: "http-route-access-control"
+  # (values.yaml) from specs/service-spec.json.tpl, "endpoint-exposer" through the
+  # service_definition module (specs/install), which derives it from the name.
+  # Both are looked up unless EXPOSER_SERVICE_SPECIFICATION_SLUG names one.
+  if [[ -n "${EXPOSER_SERVICE_SPECIFICATION_SLUG:-}" ]]; then
+    SPEC_SLUGS=$(jq -cn --arg slug "$EXPOSER_SERVICE_SPECIFICATION_SLUG" '[$slug]')
+  else
+    SPEC_SLUGS=$(jq -cn --arg slug "$SERVICE_SPECIFICATION_SLUG" '[$slug, "endpoint-exposer"] | unique')
+  fi
 
   # Each update renders the exposer's routes, which takes a few seconds per scope.
   ACTION_TIMEOUT_SECONDS="${EXPOSER_SYNC_TIMEOUT_SECONDS:-600}"
   POLL_SECONDS="${EXPOSER_SYNC_POLL_SECONDS:-5}"
 
-  echo "Spec: $SERVICE_SPECIFICATION_SLUG, application: $APPLICATION_NRN, scope: ${DEPLOYED_SCOPE_SLUG:-unknown}"
+  echo "Spec: $(jq -r 'join(" or ")' <<< "$SPEC_SLUGS"), application: $APPLICATION_NRN, scope: ${DEPLOYED_SCOPE_SLUG:-unknown}"
 
   # A failed list is not "the exposer isn't installed": skipping the sync would leave
   # the routes on the previous backend.
@@ -63,16 +67,30 @@ main() {
     exit 1
   fi
   require_results "the service specifications of $APPLICATION_NRN" "$SPECS"
-  SERVICE_SPEC_ID=$(jq -r --arg slug "$SERVICE_SPECIFICATION_SLUG" 'first((.results // [])[] | select(.slug == $slug) | .id) // ""' <<< "$SPECS")
+  if ! MATCHED_SPECS=$(jq -c --argjson slugs "$SPEC_SLUGS" \
+    '[.results[] | select(.slug as $slug | $slugs | index($slug)) | {id, slug}]' <<< "$SPECS"); then
+    echo "Error: could not read the service specifications visible to $APPLICATION_NRN: $SPECS"
+    exit 1
+  fi
 
   # This override runs on every deploy of the scope, including apps that never
   # installed the exposer. A missing spec means there is nothing to sync, not a
   # failed deploy, but it is logged as a warning: a spec registered under another
   # slug looks the same and would leave its routes on the previous backend.
-  if [[ -z "$SERVICE_SPEC_ID" ]]; then
-    echo "WARNING: no service specification with slug '$SERVICE_SPECIFICATION_SLUG' visible to $APPLICATION_NRN, skipping exposer sync (if the exposer is installed under another slug, set EXPOSER_SERVICE_SPECIFICATION_SLUG in the agent environment)"
-    return 0
-  fi
+  case "$(jq 'length' <<< "$MATCHED_SPECS")" in
+    0)
+      echo "WARNING: no service specification with slug $(jq -r 'join(" or ")' <<< "$SPEC_SLUGS") visible to $APPLICATION_NRN, skipping exposer sync (if the exposer is installed under another slug, set EXPOSER_SERVICE_SPECIFICATION_SLUG in the agent environment)"
+      return 0
+      ;;
+    1) ;;
+    *)
+      # Syncing only one of them would leave the other's routes on the previous backend.
+      echo "Error: more than one exposer specification visible to $APPLICATION_NRN ($(jq -r 'map(.slug) | join(", ")' <<< "$MATCHED_SPECS")); set EXPOSER_SERVICE_SPECIFICATION_SLUG to the one this agent serves"
+      exit 1
+      ;;
+  esac
+  SERVICE_SPEC_ID=$(jq -r '.[0].id' <<< "$MATCHED_SPECS")
+  SERVICE_SPECIFICATION_SLUG=$(jq -r '.[0].slug' <<< "$MATCHED_SPECS")
 
   # Exposers of the application that route to the deployed scope (all of them
   # when the scope isn't known).
@@ -91,7 +109,7 @@ main() {
         [.results[]
           | select(.specification_id == $spec)
           | select((.attributes.domain_name // "") == "")
-          | select($scope == "" or ([.attributes.routes[]?.scope] | index($scope)))]' <<< "$SERVICES"); then
+          | select($scope == "" or ([(.attributes.routes // [])[].scope] | index($scope)))]' <<< "$SERVICES"); then
     echo "Error: could not read the services of $APPLICATION_NRN: $SERVICES"
     exit 1
   fi
@@ -113,7 +131,7 @@ main() {
         [.results[]
           | select(.service_id as $id | $services | index($id))
           | select(.status != "deleted")
-          | select($scope == "" or ([.attributes.routes[]?.scope, .attributes.scope] | index($scope)))]' \
+          | select($scope == "" or ([(.attributes.routes // [])[].scope, .attributes.scope] | index($scope)))]' \
     <<< "$LINKS"); then
     echo "Error: could not read the links of $APPLICATION_NRN: $LINKS"
     exit 1

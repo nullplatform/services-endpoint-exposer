@@ -56,7 +56,7 @@ if [[ "$AUTH_TYPE" == "none" && "$AUTH_IS_DELETE" != "true" ]]; then
      | select(.groups // "" | if type == "array" then length > 0
                               elif type == "string" then gsub("[ ,]"; "") != ""
                               else true end)
-     | .path // "(no path)"]
+     | (.path // "") | if . == "" then "(no path)" else . end]
     | join(", ")')
   if [[ -n "$ROUTES_WITH_GROUPS" ]]; then
     echo "WARNING: AUTH_TYPE=none does not authenticate requests: the authorized groups are ignored and these routes are open to anyone: $ROUTES_WITH_GROUPS"

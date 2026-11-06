@@ -195,7 +195,7 @@ Each HTTPRoute is created in the namespace of the Services it routes to, so no R
 
 1. `NAMESPACE_OVERRIDE`, when set on the agent or channel (e.g. `{context.tags.namespace}`, the same value the scope agent uses).
 2. The namespace of the platform's Services whose selector has the scope's `scope_id`, searched across the cluster.
-3. `K8S_NAMESPACE` (default `nullplatform`), when the scope has no Service yet. Legacy services (routes on the service) always fall back to `nullplatform`.
+3. `K8S_NAMESPACE` (default `nullplatform`), when the scope has no Service yet. Legacy services (routes on the service) ignore `K8S_NAMESPACE` here and always use `nullplatform`.
 
 A `NAMESPACE_OVERRIDE` that arrives uninterpolated (it still contains `{` or `}`, e.g. a channel template written without `$`) is ignored with a warning. A scope with Services in two namespaces fails. If the Services can't be listed across the cluster, the action fails with kubectl's error: the default namespace is never assumed, since a route whose Service isn't seen there would be removed.
 
@@ -262,7 +262,7 @@ The `container-scope-override/` directory injects a `sync_exposer` step into sco
 
 The step fails the deploy when an np call fails (it can't tell what to update), when the update of an active link or service is refused or ends failed, and when an update times out. A link or service that was already failed and whose update the platform refuses or fails again (e.g. a link whose create never succeeded) is only reported.
 
-The step finds the exposer by its service specification slug: `http-route-access-control` (from `container-scope-override/values.yaml`) unless the agent environment sets `EXPOSER_SERVICE_SPECIFICATION_SLUG`. A spec registered under another name (the `service_definition` module derives the slug from the spec name, e.g. `endpoint-exposer`) needs that variable set to its slug. Otherwise the step logs `WARNING: no service specification with slug ...` and skips the sync, and the deploy passes with the routes left on the previous backend.
+The step finds the exposer by its service specification slug, which depends on how the spec was registered: `endpoint-exposer` through the `service_definition` module (`specs/install`, which derives it from the spec name) and `http-route-access-control` from `specs/service-spec.json.tpl` (the default in `container-scope-override/values.yaml`). Both are looked up. If both specs are visible to the application the step fails and asks for `EXPOSER_SERVICE_SPECIFICATION_SLUG` in the agent environment, which names the one to sync; set it too for a spec registered under any other slug. Without a matching spec the step logs `WARNING: no service specification with slug ...` and skips the sync, and the deploy passes: an application that never installed the exposer goes through here on every deploy.
 
 This mechanism only activates when the scope agent entrypoint receives `--overrides-path=` pointing to the override directory. That flag must be set on the notification channel that fires for the **target scope** — i.e. the scope specification used by apps that expose routes through this service — not on the service channel from step 1 above.
 

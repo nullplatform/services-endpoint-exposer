@@ -733,14 +733,18 @@ routes_context() {
   [[ "$output" != *"authorized groups are ignored"* ]]
 }
 
-@test "build_link_context: unlink with AUTH_TYPE=none does not warn about groups" {
-  export AUTH_TYPE=none LINK_OPERATION=delete
-  routes_context '[{"path": "/a", "groups": ["g"], "scope": "s"}]'
-
-  run bash "$SERVICE_PATH/scripts/istio/build_link_context"
+@test "resolve_auth: a delete with AUTH_TYPE=none does not warn about groups" {
+  run bash -c 'CONTEXT="{}" AUTH_TYPE=none LINK_OPERATION=delete ROUTES_JSON='"'"'[{"path":"/a","groups":["g"]}]'"'"' source "$SERVICE_PATH/scripts/istio/resolve_auth"'
 
   assert_success
   [[ "$output" != *"authorized groups are ignored"* ]]
+}
+
+@test "resolve_auth: AUTH_TYPE=none names a route with groups and no path" {
+  run bash -c 'CONTEXT="{}" AUTH_TYPE=none ROUTES_JSON='"'"'[{"path":"","groups":["g"]},{"groups":"a"}]'"'"' source "$SERVICE_PATH/scripts/istio/resolve_auth"'
+
+  assert_success
+  assert_output --partial "open to anyone: (no path), (no path)"
 }
 
 @test "build_link_context: unlink only needs the link identity" {
