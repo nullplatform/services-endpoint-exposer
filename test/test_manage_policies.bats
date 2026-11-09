@@ -118,6 +118,46 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   assert_success
 }
 
+@test "build_context: AUTH_TYPE=none warns that the groups of legacy routes are ignored" {
+  export AUTH_TYPE="none"
+  export CONTEXT=$(context create "$ROUTES_WITH_GROUPS" dev)
+
+  run bash "$SERVICE_PATH/scripts/istio/build_context"
+
+  assert_success
+  assert_output --partial "the authorized groups are ignored"
+}
+
+@test "build_context: AUTH_TYPE=none does not warn for legacy routes without groups" {
+  export AUTH_TYPE="none"
+  export CONTEXT=$(context create "$ROUTES_NO_GROUPS" dev)
+
+  run bash "$SERVICE_PATH/scripts/istio/build_context"
+
+  assert_success
+  [[ "$output" != *"authorized groups are ignored"* ]]
+}
+
+@test "build_context: AUTH_TYPE=none warns, and doesn't abort, on a malformed groups value" {
+  export AUTH_TYPE="none"
+  export CONTEXT=$(context create '[{"methods":["GET"],"path":"/api/users","scope":"users-prod","groups":5}]' dev)
+
+  run bash "$SERVICE_PATH/scripts/istio/build_context"
+
+  assert_success
+  assert_output --partial "open to anyone: /api/users"
+}
+
+@test "build_context: AUTH_TYPE=none does not warn on a legacy delete" {
+  export AUTH_TYPE="none"
+  export CONTEXT=$(context delete "$ROUTES_WITH_GROUPS" dev)
+
+  run bash "$SERVICE_PATH/scripts/istio/build_context"
+
+  assert_success
+  [[ "$output" != *"authorized groups are ignored"* ]]
+}
+
 @test "build_context: explicit AUTH_TYPE=none may drop auth from a service stored with it" {
   export AUTH_TYPE="none"
   export CONTEXT=$(context update "$ROUTES_NO_GROUPS" "" '{"auth_type":"aws-cognito"}')

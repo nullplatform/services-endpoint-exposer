@@ -23,16 +23,44 @@ delete_if_exists() {
   fi
 }
 
+# Delete this service's HTTPRoute named $1 in every namespace except $2 (optional).
+# HTTPRoutes live next to the app's Services, so they are found by label across
+# the cluster instead of in a single namespace (list_cluster_wide in config fails
+# rather than leave a copy behind that it can't see).
+delete_httproute_everywhere() {
+  local name="$1"
+  local keep_namespace="${2:-}"
+  local httproutes
+  local namespaces
+  local found=false
+
+  httproutes=$(list_cluster_wide httproute -l "nullplatform.com/service-id=$SERVICE_ID") || exit 1
+  namespaces=$(echo "$httproutes" | jq -r --arg name "$name" '.items[]? | select(.metadata.name == $name) | .metadata.namespace')
+
+  for namespace in $namespaces; do
+    [[ "$namespace" == "$keep_namespace" ]] && continue
+    found=true
+    echo "Deleting httproute: $name in namespace $namespace"
+    if [[ "$DRY_RUN" == "false" ]]; then
+      kubectl delete httproute "$name" -n "$namespace" --ignore-not-found
+    fi
+  done
+
+  if [[ "$found" == "false" ]]; then
+    echo "httproute $name: nothing to delete${keep_namespace:+ outside namespace $keep_namespace}"
+  fi
+}
+
 # Check for marker files indicating resources should be deleted
 if [[ -f "$OUTPUT_DIR/.httproute-public-deleted" ]]; then
   echo "Public HTTPRoute marked for deletion"
-  delete_if_exists "httproute" "$SERVICE_SLUG-$SERVICE_ID-public" "$K8S_NAMESPACE"
+  delete_httproute_everywhere "$SERVICE_SLUG-$SERVICE_ID-public"
   rm "$OUTPUT_DIR/.httproute-public-deleted"
 fi
 
 if [[ -f "$OUTPUT_DIR/.httproute-private-deleted" ]]; then
   echo "Private HTTPRoute marked for deletion"
-  delete_if_exists "httproute" "$SERVICE_SLUG-$SERVICE_ID-private" "$K8S_NAMESPACE"
+  delete_httproute_everywhere "$SERVICE_SLUG-$SERVICE_ID-private"
   rm "$OUTPUT_DIR/.httproute-private-deleted"
 fi
 
@@ -46,6 +74,14 @@ if [[ -f "$OUTPUT_DIR/.authz-private-deleted" ]]; then
   echo "Private AuthorizationPolicy marked for deletion"
   delete_if_exists "authorizationpolicy" "$SERVICE_SLUG-$SERVICE_ID-authz-private" "$GATEWAY_NAMESPACE"
   rm "$OUTPUT_DIR/.authz-private-deleted"
+fi
+
+if [[ -f "$OUTPUT_DIR/.httproute-link-deleted" ]]; then
+  echo "HTTPRoute of link $LINK_ID marked for deletion (none of its routes has a backend)"
+  if [[ "$DRY_RUN" == "false" ]]; then
+    delete_cluster_wide httproute "nullplatform.com/managed-by=http-route-access-control,nullplatform.com/link-id=$LINK_ID"
+  fi
+  rm "$OUTPUT_DIR/.httproute-link-deleted"
 fi
 
 # Collect all yaml files into a temporary directory for batch apply
@@ -71,6 +107,15 @@ if [[ "$NUM_FILES" -gt 0 ]]; then
   fi
 else
   echo "No resources to apply"
+fi
+
+# An HTTPRoute that moved namespace (e.g. its app moved out of the default one)
+# leaves the old copy behind; remove it once the new one is applied.
+if [[ "$ACTION" == "apply" ]]; then
+  for HTTPROUTE_FILE in "$OUTPUT_DIR"/httproute-*.yaml; do
+    [[ -f "$HTTPROUTE_FILE" ]] || continue
+    delete_httproute_everywhere "$(yq '.metadata.name' "$HTTPROUTE_FILE")" "$(yq '.metadata.namespace' "$HTTPROUTE_FILE")"
+  done
 fi
 
 # Move processed files to apply directory

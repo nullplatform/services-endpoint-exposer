@@ -3,72 +3,137 @@
 # Runs inside the scope's deploy workflows (blue_green, switch_traffic,
 # finalize, rollback, initial, delete). Re-runs `update` on every endpoint
 # exposer of the application that routes to the scope being deployed, so their
-# HTTPRoutes follow the scope's Kubernetes services. A failure fails the deploy
-# step: the exposer routes would otherwise point at the wrong backend.
+# HTTPRoutes follow the scope's Kubernetes services.
 #
 # Two kinds of exposers own HTTPRoutes:
-#   - links (domain + links model): the update action of each active link of the
-#     application with a route that targets the deployed scope
+#   - links (domain + links model): the update action of each active or failed
+#     link of the application with a route that targets the deployed scope
 #   - legacy services (routes declared inline on the service): the service's
 #     update action
+#
+# What fails the deploy step (the exposer routes would otherwise point at the wrong
+# backend):
+#   - any np call that fails: the sync can't tell what to update, or with which routes
+#   - an update of an active exposer that the platform refuses or that ends failed
+#   - an update that times out, or whose action can't be followed
+# An exposer that was already failed and whose update the platform refuses or fails
+# again (e.g. a link whose create never succeeded) is only reported.
 
 # The body is a function so the early outs can `return`: the np CLI ends the
 # whole workflow when a step script calls `exit 0`, skipping the steps after it.
 main() {
   echo "=== Starting sync_exposer ==="
 
+  # require_results WHAT JSON: np can exit 0 with a body that isn't a list (an
+  # error object); read as "no results" it would skip the sync and pass the deploy.
+  require_results() {
+    if ! jq -e '.results | type == "array"' >/dev/null 2>&1 <<< "$2"; then
+      echo "Error: unexpected response listing $1: $2"
+      exit 1
+    fi
+  }
+
   APPLICATION_NRN=$(jq -r .application.nrn <<< "$CONTEXT")
   DEPLOYED_SCOPE_ID=$(jq -r '.scope.id // "" | tostring' <<< "$CONTEXT")
   DEPLOYED_SCOPE_SLUG=$(jq -r '.scope.slug // ""' <<< "$CONTEXT")
   if [[ -z "$DEPLOYED_SCOPE_SLUG" && -n "$DEPLOYED_SCOPE_ID" ]]; then
-    DEPLOYED_SCOPE_SLUG=$(np scope read --id "$DEPLOYED_SCOPE_ID" --format json | jq -r '.slug // ""')
+    if ! SCOPE_JSON=$(np scope read --id "$DEPLOYED_SCOPE_ID" --format json); then
+      echo "Error: could not read scope $DEPLOYED_SCOPE_ID: $SCOPE_JSON"
+      exit 1
+    fi
+    DEPLOYED_SCOPE_SLUG=$(jq -r '.slug // ""' <<< "$SCOPE_JSON")
   fi
 
-  # values.yaml ships the slug the spec gets when registered from this repo
-  # ("http-route-access-control"). Installations that registered it under another
-  # name (e.g. "endpoint-exposer") set EXPOSER_SERVICE_SPECIFICATION_SLUG in the
-  # agent environment; values.yaml configuration would otherwise shadow it.
-  SERVICE_SPECIFICATION_SLUG="${EXPOSER_SERVICE_SPECIFICATION_SLUG:-$SERVICE_SPECIFICATION_SLUG}"
+  # The spec's slug depends on how it was registered: "http-route-access-control"
+  # (values.yaml) from specs/service-spec.json.tpl, "endpoint-exposer" through the
+  # service_definition module (specs/install), which derives it from the name.
+  # Both are looked up unless EXPOSER_SERVICE_SPECIFICATION_SLUG names one.
+  if [[ -n "${EXPOSER_SERVICE_SPECIFICATION_SLUG:-}" ]]; then
+    SPEC_SLUGS=$(jq -cn --arg slug "$EXPOSER_SERVICE_SPECIFICATION_SLUG" '[$slug]')
+  else
+    SPEC_SLUGS=$(jq -cn --arg slug "$SERVICE_SPECIFICATION_SLUG" '[$slug, "endpoint-exposer"] | map(select(. != "")) | unique')
+  fi
 
   # Each update renders the exposer's routes, which takes a few seconds per scope.
   ACTION_TIMEOUT_SECONDS="${EXPOSER_SYNC_TIMEOUT_SECONDS:-600}"
   POLL_SECONDS="${EXPOSER_SYNC_POLL_SECONDS:-5}"
 
-  echo "Spec: $SERVICE_SPECIFICATION_SLUG, application: $APPLICATION_NRN, scope: ${DEPLOYED_SCOPE_SLUG:-unknown}"
+  echo "Spec: $(jq -r 'join(" or ")' <<< "$SPEC_SLUGS"), application: $APPLICATION_NRN, scope: ${DEPLOYED_SCOPE_SLUG:-unknown}"
 
-  SERVICE_SPEC_ID=$(np service specification list --nrn "$APPLICATION_NRN" --type dependency --format json \
-    | jq -r --arg slug "$SERVICE_SPECIFICATION_SLUG" 'first(.results[] | select(.slug == $slug) | .id) // ""')
-
-  # This override runs on every deploy of the scope, including apps that never
-  # installed the exposer. A missing spec means there is nothing to sync, not a
-  # failed deploy.
-  if [[ -z "$SERVICE_SPEC_ID" ]]; then
-    echo "No service specification with slug '$SERVICE_SPECIFICATION_SLUG' visible to $APPLICATION_NRN, skipping exposer sync"
-    return 0
+  # A failed list is not "the exposer isn't installed": skipping the sync would leave
+  # the routes on the previous backend.
+  if ! SPECS=$(np service specification list --nrn "$APPLICATION_NRN" --type dependency --format json); then
+    echo "Error: could not list the service specifications visible to $APPLICATION_NRN: $SPECS"
+    exit 1
   fi
-
-  UPDATE_ACTION_SPEC_ID=$(np service specification action specification list --serviceSpecificationId "$SERVICE_SPEC_ID" --format json \
-    | jq -r --arg slug "update-$SERVICE_SPECIFICATION_SLUG" 'first(.results[] | select(.slug == $slug) | .id) // ""')
-  if [[ -z "$UPDATE_ACTION_SPEC_ID" ]]; then
-    echo "Error: no action specification 'update-$SERVICE_SPECIFICATION_SLUG' for service specification $SERVICE_SPEC_ID"
+  require_results "the service specifications of $APPLICATION_NRN" "$SPECS"
+  # A spec without an id would sync nothing and pass, so it fails like any malformed entry.
+  if ! MATCHED_SPECS=$(jq -c --argjson slugs "$SPEC_SLUGS" '
+    [.results[]
+     | if type == "object" then . else error("not an object") end
+     | select(.slug as $slug | $slugs | index($slug))
+     | if .id == null then error("no id") else {id, slug} end]' <<< "$SPECS"); then
+    echo "Error: could not read the service specifications visible to $APPLICATION_NRN: $SPECS"
     exit 1
   fi
 
-  # Exposers of the application that route to the deployed scope (all of them
-  # when the scope isn't known).
-  # Only --nrn: the np CLI in the controlplane-agent image (aws-0.7.0) rejects
-  # --specification-id, and an empty list here would silently skip the sync.
-  # The jq filter keeps only this spec's services.
+  # This override runs on every deploy of the scope, including apps that never
+  # installed the exposer. A missing spec means there is nothing to sync, not a
+  # failed deploy, but it is logged as a warning: a spec registered under another
+  # slug looks the same and would leave its routes on the previous backend.
+  # Distinct slugs: the same spec can be listed more than once (one per NRN level).
+  if [[ "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" -eq 0 ]]; then
+    echo "WARNING: no service specification with slug $(jq -r 'join(" or ")' <<< "$SPEC_SLUGS") visible to $APPLICATION_NRN, skipping exposer sync (if the exposer is installed under another slug, set EXPOSER_SERVICE_SPECIFICATION_SLUG in the agent environment)"
+    return 0
+  fi
+
+  # The application's services. Only --nrn: the np CLI in the controlplane-agent
+  # image (aws-0.7.0) rejects --specification-id, and an empty list here would
+  # silently skip the sync. The jq filters below keep the exposer spec's services.
   if ! SERVICES=$(np service list --nrn "$APPLICATION_NRN" --format json); then
     echo "Error: could not list the services of $APPLICATION_NRN"
     exit 1
   fi
+  require_results "the services of $APPLICATION_NRN" "$SERVICES"
+
+  # With both slugs visible, the spec is the one the application's exposers use: an
+  # application without exposers (most of the org) has nothing to sync and must not
+  # fail its deploy.
+  if [[ "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" -gt 1 ]]; then
+    if ! MATCHED_SPECS=$(jq -c --argjson specs "$MATCHED_SPECS" \
+      '[.results[].specification_id] as $used | $specs | map(select(.id as $id | $used | index($id)))' <<< "$SERVICES"); then
+      echo "Error: could not read the services of $APPLICATION_NRN: $SERVICES"
+      exit 1
+    fi
+    case "$(jq '[.[].slug] | unique | length' <<< "$MATCHED_SPECS")" in
+      0)
+        echo "No endpoint exposer routes to this scope, skipping exposer sync"
+        return 0
+        ;;
+      1) ;;
+      *)
+        # Syncing only one of them would leave the other's routes on the previous backend.
+        echo "Error: the application has exposers under more than one exposer specification ($(jq -r 'map(.slug) | unique | join(", ")' <<< "$MATCHED_SPECS")); set EXPOSER_SERVICE_SPECIFICATION_SLUG to the one this agent serves"
+        exit 1
+        ;;
+    esac
+  fi
+  SERVICE_SPEC_ID=$(jq -r '.[0].id' <<< "$MATCHED_SPECS")
+  SERVICE_SPECIFICATION_SLUG=$(jq -r '.[0].slug' <<< "$MATCHED_SPECS")
+
+  # Exposers of the application that route to the deployed scope (all of them
+  # when the scope isn't known).
   # Legacy services only: a domain service holds no routes of its own, its links do.
-  EXPOSERS=$(jq -c --arg spec "$SERVICE_SPEC_ID" --arg scope "$DEPLOYED_SCOPE_SLUG" '
+  # A filter that fails on a malformed service or link would otherwise look like
+  # "nothing to sync" below.
+  if ! EXPOSERS=$(jq -c --arg spec "$SERVICE_SPEC_ID" --arg scope "$DEPLOYED_SCOPE_SLUG" '
         [.results[]
           | select(.specification_id == $spec)
           | select((.attributes.domain_name // "") == "")
-          | select($scope == "" or ([.attributes.routes[]?.scope] | index($scope)))]' <<< "$SERVICES")
+          | select($scope == "" or ([(.attributes.routes // [])[].scope] | index($scope)))]' <<< "$SERVICES"); then
+    echo "Error: could not read the services of $APPLICATION_NRN: $SERVICES"
+    exit 1
+  fi
 
   # Links of the application on this spec's services with a route on the deployed
   # scope. Every route stores its resolved scope; links created before the routes
@@ -77,107 +142,234 @@ main() {
     echo "Error: could not list the links of $APPLICATION_NRN"
     exit 1
   fi
-  DOMAIN_SERVICE_IDS=$(jq -c --arg spec "$SERVICE_SPEC_ID" \
-    '[.results[] | select(.specification_id == $spec and (.attributes.domain_name // "") != "") | .id]' <<< "$SERVICES")
-  LINKS=$(jq -c --argjson services "$DOMAIN_SERVICE_IDS" --arg scope "$DEPLOYED_SCOPE_SLUG" '
-        [(.results // [])[]
+  require_results "the links of $APPLICATION_NRN" "$LINKS"
+  if ! DOMAIN_SERVICE_IDS=$(jq -c --arg spec "$SERVICE_SPEC_ID" \
+    '[.results[] | select(.specification_id == $spec and (.attributes.domain_name // "") != "") | .id]' <<< "$SERVICES"); then
+    echo "Error: could not read the services of $APPLICATION_NRN: $SERVICES"
+    exit 1
+  fi
+  if ! LINKS=$(jq -c --argjson services "$DOMAIN_SERVICE_IDS" --arg scope "$DEPLOYED_SCOPE_SLUG" '
+        [.results[]
           | select(.service_id as $id | $services | index($id))
           | select(.status != "deleted")
-          | select($scope == "" or ([.attributes.routes[]?.scope, .attributes.scope] | index($scope)))]' \
-    <<< "${LINKS:-"{}"}")
+          | select($scope == "" or ([(.attributes.routes // [])[].scope, .attributes.scope] | index($scope)))]' \
+    <<< "$LINKS"); then
+    echo "Error: could not read the links of $APPLICATION_NRN: $LINKS"
+    exit 1
+  fi
 
   if [[ "$(jq 'length' <<< "$EXPOSERS")" -eq 0 && "$(jq 'length' <<< "$LINKS")" -eq 0 ]]; then
     echo "No endpoint exposer routes to this scope, skipping exposer sync"
     return 0
   fi
 
-  # An update action is rejected unless the create succeeded, so only active
-  # services and links can be synced; the rest are reported, not retried.
-  jq -r '.[] | select(.status != "active") | "Skipping endpoint exposer \(.name) [\(.id)] (status=\(.status)): only active services can be updated"' <<< "$EXPOSERS"
-  jq -r '.[] | select(.status != "active") | "Skipping endpoint exposer link \(.name) [\(.id)] (status=\(.status)): only active links can be updated"' <<< "$LINKS"
+  # Active and failed services and links are synced. A link update refused by a
+  # conflict leaves the link failed while its stored routes (and its HTTPRoute) stay
+  # the previous ones, so skipping it would leave the route on a deleted Service.
+  # The platform accepts the update and the link goes back to active. A failed one
+  # whose create never succeeded is refused again: that is reported, and does not
+  # fail the deployment. Anything in progress (creating, deleting) is skipped.
+  SYNCABLE='["active", "failed"]'
+  jq -r --argjson ok "$SYNCABLE" '.[] | select(.status as $s | $ok | index($s) | not) | "Skipping endpoint exposer \(.name) [\(.id)] (status=\(.status))"' <<< "$EXPOSERS"
+  jq -r --argjson ok "$SYNCABLE" '.[] | select(.status as $s | $ok | index($s) | not) | "Skipping endpoint exposer link \(.name) [\(.id)] (status=\(.status))"' <<< "$LINKS"
 
-  # wait_for_action KIND ID ACTION_ID -> final status (KIND: service | link)
+  # np_refused OUTPUT: np's error is the platform rejecting the request (bad
+  # parameters, a conflict, an item gone), not a credential or connectivity problem.
+  np_refused() {
+    grep -Eq 'status (400|404|409|422)' <<< "$1"
+  }
+
+  # wait_for_action KIND ID ACTION_ID -> final status (KIND: service | link):
+  # success | failed | cancelled, timeout, or error when np fails three times in a
+  # row (a bad API key or an unreachable API, which waiting longer won't fix).
   wait_for_action() {
-    local kind="$1" id="$2" action_id="$3" status="" waited=0
+    local kind="$1" id="$2" action_id="$3" out status="" waited=0 errors=0
     while (( waited < ACTION_TIMEOUT_SECONDS )); do
-      status=$(np "$kind" action read "--${kind}Id" "$id" --id "$action_id" --format json | jq -r '.status // ""')
-      case "$status" in
-        success|failed|cancelled) echo "$status"; return 0 ;;
-      esac
+      if out=$(np "$kind" action read "--${kind}Id" "$id" --id "$action_id" --format json); then
+        errors=0
+        status=$(jq -r '.status // ""' <<< "$out")
+        case "$status" in
+          success|failed|cancelled) echo "$status"; return 0 ;;
+        esac
+      else
+        errors=$((errors + 1))
+        if (( errors >= 3 )); then
+          echo "Error: could not read action $action_id of $kind $id: $out" >&2
+          echo "error"
+          return 0
+        fi
+      fi
       sleep "$POLL_SECONDS"
       waited=$((waited + POLL_SECONDS))
     done
     echo "timeout"
   }
 
-  # sync KIND ID NAME ACTION_SPEC_ID PARAMETERS
+  # sync KIND ID NAME ACTION_SPEC_ID PARAMETERS -> 0 updated, 1 the platform refused
+  # the update or it ended failed, 2 anything else (np failed, timeout).
   sync() {
-    local kind="$1" id="$2" name="$3" action_spec_id="$4" parameters="$5" pending action_id status
+    local kind="$1" id="$2" name="$3" action_spec_id="$4" parameters="$5" out pending action_id status
 
     # An action already pending or in progress may have read the Kubernetes
     # services before this deploy step changed them: let it finish, then run a
     # fresh update.
-    pending=$(np "$kind" action list "--${kind}Id" "$id" --format json \
-      | jq -r '[.results[] | select(.status == "pending" or .status == "in_progress") | .id] | .[]')
+    if ! out=$(np "$kind" action list "--${kind}Id" "$id" --format json); then
+      echo "❌ Could not list the actions of endpoint exposer $name [$id]: $out"
+      return 2
+    fi
+    pending=$(jq -r '[(.results // [])[] | select(.status == "pending" or .status == "in_progress") | .id] | .[]' <<< "$out")
     for action_id in $pending; do
       echo "Waiting for action $action_id of $name to finish before syncing..."
-      wait_for_action "$kind" "$id" "$action_id" >/dev/null
+      status=$(wait_for_action "$kind" "$id" "$action_id")
+      case "$status" in
+        success|failed|cancelled) ;;
+        error)
+          echo "❌ Could not follow action $action_id of endpoint exposer $name [$id]"
+          return 2 ;;
+        *)
+          echo "WARNING: action $action_id of $name is still running after ${ACTION_TIMEOUT_SECONDS}s; updating anyway" ;;
+      esac
     done
 
-    action_id=$(np "$kind" action create "--${kind}Id" "$id" \
+    if ! out=$(np "$kind" action create "--${kind}Id" "$id" \
       --body "$(jq -nc --argjson params "$parameters" --arg spec_id "$action_spec_id" \
         '{name: "update", parameters: $params, specification_id: $spec_id}')" \
-      --format json | jq -r '.id // ""')
+      --format json); then
+      if np_refused "$out"; then
+        echo "❌ The platform refused the update of endpoint exposer $name [$id]: $out"
+        return 1
+      fi
+      echo "❌ Could not create an update action for endpoint exposer $name [$id]: $out"
+      return 2
+    fi
+    action_id=$(jq -r '.id // ""' <<< "$out")
     if [[ -z "$action_id" ]]; then
-      echo "❌ Could not create an update action for endpoint exposer $name [$id]"
-      return 1
+      echo "❌ Could not create an update action for endpoint exposer $name [$id]: $out"
+      return 2
     fi
 
     echo "Created update action $action_id for endpoint exposer $name, waiting for it..."
     status=$(wait_for_action "$kind" "$id" "$action_id")
-    if [[ "$status" != "success" ]]; then
-      echo "❌ Update action $action_id of endpoint exposer $name ended $status"
-      return 1
-    fi
-    echo "✅ Endpoint exposer $name updated"
+    case "$status" in
+      success)
+        echo "✅ Endpoint exposer $name updated"
+        return 0 ;;
+      failed|cancelled)
+        echo "❌ Update action $action_id of endpoint exposer $name ended $status"
+        return 1 ;;
+      *)
+        echo "❌ Update action $action_id of endpoint exposer $name: $status"
+        return 2 ;;
+    esac
   }
 
   FAILED=()
+  WARNED=()
 
-  while IFS=$'\t' read -r SERVICE_ID SERVICE_NAME; do
-    [[ -z "$SERVICE_ID" ]] && continue
-    # The routes as the user declared them; build_context recomputes the derived
-    # fields (visibility, summary).
-    PARAMETERS=$(np service read --id "$SERVICE_ID" --format json \
-      | jq -c '{routes: [(.attributes.routes // [])[] | del(.visibility, .summary)]}')
-    [[ -z "$PARAMETERS" ]] && PARAMETERS='{}'
-    if ! sync service "$SERVICE_ID" "$SERVICE_NAME" "$UPDATE_ACTION_SPEC_ID" "$PARAMETERS"; then
-      FAILED+=("$SERVICE_NAME [$SERVICE_ID]")
+  # report_failure NAME STATUS RC (RC from sync): a refused or failed update of an
+  # item that was already failed is only reported; anything else fails the step.
+  report_failure() {
+    if [[ "$3" -eq 1 && "$2" != "active" ]]; then
+      WARNED+=("$1")
+    else
+      FAILED+=("$1")
     fi
-  done < <(jq -r '.[] | select(.status == "active") | [.id, .name] | @tsv' <<< "$EXPOSERS")
+  }
+
+  # Only legacy services are updated through the service's update action (links
+  # use their link spec's), so it is looked up only when one routes to this scope:
+  # an app without exposers must deploy even when the action isn't visible to this
+  # API key (a spec registered at the org while the key is the account's lists
+  # none). With no action, each legacy exposer is reported like a failed update.
+  # The lookup's outcome as a sync RC: 2 when np failed, 1 when the action isn't
+  # visible (reported like a refused update).
+  UPDATE_ACTION_SPEC_ID=""
+  UPDATE_ACTION_RC=0
+  if [[ "$(jq 'length' <<< "$EXPOSERS")" -gt 0 ]]; then
+    if ! ACTION_SPECS=$(np service specification action specification list --serviceSpecificationId "$SERVICE_SPEC_ID" --format json); then
+      echo "❌ Could not list the actions of service specification $SERVICE_SPEC_ID: $ACTION_SPECS"
+      UPDATE_ACTION_RC=2
+    else
+      UPDATE_ACTION_SPEC_ID=$(jq -r --arg slug "update-$SERVICE_SPECIFICATION_SLUG" \
+        'first((.results // [])[] | select(.slug == $slug) | .id) // ""' <<< "$ACTION_SPECS")
+      if [[ -z "$UPDATE_ACTION_SPEC_ID" ]]; then
+        echo "❌ No action specification 'update-$SERVICE_SPECIFICATION_SLUG' visible for service specification $SERVICE_SPEC_ID"
+        UPDATE_ACTION_RC=1
+      fi
+    fi
+  fi
+
+  while IFS=$'\t' read -r SERVICE_ID SERVICE_NAME SERVICE_STATUS; do
+    [[ -z "$SERVICE_ID" ]] && continue
+    if [[ -z "$UPDATE_ACTION_SPEC_ID" ]]; then
+      report_failure "$SERVICE_NAME [$SERVICE_ID]" "$SERVICE_STATUS" "$UPDATE_ACTION_RC"
+      continue
+    fi
+    # The routes as the user declared them; build_context recomputes the derived
+    # fields (visibility, summary). A read that fails or brings no routes is never
+    # sent: an update with no routes would take them all down.
+    if ! SERVICE_JSON=$(np service read --id "$SERVICE_ID" --format json); then
+      echo "❌ Could not read endpoint exposer $SERVICE_NAME [$SERVICE_ID]: $SERVICE_JSON"
+      report_failure "$SERVICE_NAME [$SERVICE_ID]" "$SERVICE_STATUS" 2
+      continue
+    fi
+    PARAMETERS=$(jq -c '{routes: [(.attributes.routes // [])[] | del(.visibility, .summary)]}' <<< "$SERVICE_JSON")
+    if [[ "$(jq '.routes | length' <<< "$PARAMETERS")" -eq 0 ]]; then
+      echo "❌ Endpoint exposer $SERVICE_NAME [$SERVICE_ID] has no routes stored; not updating it"
+      report_failure "$SERVICE_NAME [$SERVICE_ID]" "$SERVICE_STATUS" 2
+      continue
+    fi
+    RC=0
+    sync service "$SERVICE_ID" "$SERVICE_NAME" "$UPDATE_ACTION_SPEC_ID" "$PARAMETERS" || RC=$?
+    if [[ "$RC" -ne 0 ]]; then
+      report_failure "$SERVICE_NAME [$SERVICE_ID]" "$SERVICE_STATUS" "$RC"
+    fi
+  done < <(jq -r --argjson ok "$SYNCABLE" '.[] | select(.status as $s | $ok | index($s)) | [.id, .name, .status] | @tsv' <<< "$EXPOSERS")
 
   while IFS= read -r LINK; do
     [[ -z "$LINK" ]] && continue
     LINK_ID=$(jq -r .id <<< "$LINK")
     LINK_NAME="link $(jq -r '.name // .slug // .id' <<< "$LINK")"
+    LINK_STATUS=$(jq -r .status <<< "$LINK")
 
-    LINK_ACTION_SPEC_ID=$(np link specification action specification list \
-      --linkSpecificationId "$(jq -r .specification_id <<< "$LINK")" --format json | jq -r '
-      first(.results[] | select(.type == "update" or (.slug | startswith("update"))) | .id) // ""')
+    if ! LINK_ACTION_SPECS=$(np link specification action specification list \
+      --linkSpecificationId "$(jq -r .specification_id <<< "$LINK")" --format json); then
+      echo "❌ Could not list the actions of the link specification of $LINK_NAME [$LINK_ID]: $LINK_ACTION_SPECS"
+      report_failure "$LINK_NAME [$LINK_ID]" "$LINK_STATUS" 2
+      continue
+    fi
+    LINK_ACTION_SPEC_ID=$(jq -r '
+      first((.results // [])[] | select(.type == "update" or (.slug | startswith("update"))) | .id) // ""' <<< "$LINK_ACTION_SPECS")
     if [[ -z "$LINK_ACTION_SPEC_ID" ]]; then
       echo "❌ No update action specification for $LINK_NAME [$LINK_ID]"
-      FAILED+=("$LINK_NAME [$LINK_ID]")
+      report_failure "$LINK_NAME [$LINK_ID]" "$LINK_STATUS" 1
       continue
     fi
 
     # The routes as the user declared them; build_link_context recomputes the
-    # derived fields (endpoints, summaries, auth_type).
-    PARAMETERS=$(jq -c '.attributes | del(.endpoint, .endpoints, .summary, .auth_type)
-      | if .routes then .routes |= map(del(.summary)) else . end' <<< "$LINK")
-    if ! sync link "$LINK_ID" "$LINK_NAME" "$LINK_ACTION_SPEC_ID" "$PARAMETERS"; then
-      FAILED+=("$LINK_NAME [$LINK_ID]")
+    # derived fields (endpoints, summaries, auth_type). Links created before the
+    # routes list kept a single path at the top level, which the update action
+    # rejects ("must have required property 'routes'"): send it as a one-route list.
+    # The oldest ones stored a single `method`, sent as `methods`.
+    PARAMETERS=$(jq -c '
+      def with_methods: if .methods == null and .method != null then .methods = [.method] else . end | del(.method);
+      .attributes
+      | if .routes then . else
+          {routes: [with_methods | {path, methods, scope, groups} | with_entries(select(.value != null))]}
+          + del(.path, .methods, .method, .scope, .groups)
+        end
+      | del(.endpoint, .endpoints, .summary, .auth_type)
+      | .routes |= map(with_methods | del(.summary))' <<< "$LINK")
+    RC=0
+    sync link "$LINK_ID" "$LINK_NAME" "$LINK_ACTION_SPEC_ID" "$PARAMETERS" || RC=$?
+    if [[ "$RC" -ne 0 ]]; then
+      report_failure "$LINK_NAME [$LINK_ID]" "$LINK_STATUS" "$RC"
     fi
-  done < <(jq -c '.[] | select(.status == "active")' <<< "$LINKS")
+  done < <(jq -c --argjson ok "$SYNCABLE" '.[] | select(.status as $s | $ok | index($s))' <<< "$LINKS")
+
+  if [[ ${#WARNED[@]} -gt 0 ]]; then
+    echo "WARNING: the platform refused or failed the update of endpoint exposer(s) that were already failed: ${WARNED[*]}"
+  fi
 
   if [[ ${#FAILED[@]} -gt 0 ]]; then
     echo "❌ Could not update endpoint exposer(s): ${FAILED[*]}"
