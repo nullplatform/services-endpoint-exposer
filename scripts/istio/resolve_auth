@@ -46,6 +46,23 @@ if [[ -z "${AUTH_TYPE:-}" ]]; then
   AUTH_TYPE="none"
 fi
 
+# No JWT is validated with none, so groups can't be enforced: the route is open to
+# anyone. Warn so whoever asked for groups doesn't take the route as protected.
+if [[ "$AUTH_TYPE" == "none" && "$AUTH_IS_DELETE" != "true" ]]; then
+  # Any groups value other than empty counts: a malformed one must not abort a
+  # warning-only check, nor hide the route.
+  ROUTES_WITH_GROUPS=$(echo "${ROUTES_JSON:-[]}" | jq -r '
+    [.[]
+     | select(.groups // "" | if type == "array" then length > 0
+                              elif type == "string" then gsub("[ ,]"; "") != ""
+                              else true end)
+     | (.path // "") | if . == "" then "(no path)" else . end]
+    | join(", ")')
+  if [[ -n "$ROUTES_WITH_GROUPS" ]]; then
+    echo "WARNING: AUTH_TYPE=none does not authenticate requests: the authorized groups are ignored and these routes are open to anyone: $ROUTES_WITH_GROUPS"
+  fi
+fi
+
 ENV_SUFFIX=$(echo "${ENV_DIMENSION:-}" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
 
 if [[ "$AUTH_TYPE" != "none" ]]; then

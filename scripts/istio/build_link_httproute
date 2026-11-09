@@ -42,4 +42,15 @@ rm "$CONTEXT_PATH"
 export HTTPROUTE_FILE
 source "$SERVICE_PATH/scripts/istio/process_routes"
 
+# No route got a backend, so the template's catch-all placeholder rule (/ to a
+# Service that doesn't exist) is all that's left: applying it would answer 500 on
+# every undeclared path of the domain. The link gets no HTTPRoute until one of its
+# scopes is deployed (the deploy sync updates it then), and apply deletes the old one.
+if [[ "$(yq '(.spec.rules | length) == 1 and .spec.rules[0].backendRefs[0].name == "response-404"' "$HTTPROUTE_FILE")" == "true" ]]; then
+  echo "WARNING: no route of link $LINK_ID has a backend: its HTTPRoute is removed until a scope is deployed"
+  rm "$HTTPROUTE_FILE"
+  touch "$OUTPUT_DIR/.httproute-link-deleted"
+  return 0 2>/dev/null || exit 0
+fi
+
 echo "✅ HTTPRoute created: $HTTPROUTE_FILE"

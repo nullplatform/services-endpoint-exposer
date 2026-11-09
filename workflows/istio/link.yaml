@@ -39,10 +39,6 @@ steps:
   - name: "build httproute"
     type: script
     file: "$SERVICE_PATH/scripts/istio/build_link_httproute"
-    output:
-      - name: HTTPROUTE_FILE
-        type: file
-        file: "$OUTPUT_DIR/httproute-link-$LINK_ID.yaml"
   - name: "build policies"
     type: script
     file: "$SERVICE_PATH/scripts/istio/build_link_policies"
