@@ -96,3 +96,30 @@ teardown() {
   [[ -n "$PUBLIC_ROUTES_JSON" ]]
   [[ -n "$PRIVATE_ROUTES_JSON" ]]
 }
+
+@test "build_context: ignores a NAMESPACE_OVERRIDE that was not interpolated" {
+  export CONTEXT='{"service":{"id":"svc-1","slug":"api"},"id":"act-1","slug":"create","parameters":{"routes":[]}}'
+  export NAMESPACE_OVERRIDE='{context.tags.namespace}'
+
+  source "$SERVICE_PATH/scripts/istio/build_context"
+
+  [[ "$K8S_NAMESPACE" == "nullplatform" ]]
+}
+
+@test "build_context: ignores a NAMESPACE_OVERRIDE with a lone brace" {
+  export CONTEXT='{"service":{"id":"svc-1","slug":"api"},"id":"act-1","slug":"create","parameters":{"routes":[]}}'
+  export NAMESPACE_OVERRIDE='team-{a'
+
+  source "$SERVICE_PATH/scripts/istio/build_context"
+
+  [[ "$K8S_NAMESPACE" == "nullplatform" ]]
+}
+
+@test "build_context: honors a NAMESPACE_OVERRIDE that was interpolated" {
+  export CONTEXT='{"service":{"id":"svc-1","slug":"api"},"id":"act-1","slug":"create","parameters":{"routes":[]}}'
+  export NAMESPACE_OVERRIDE='team-a'
+
+  source "$SERVICE_PATH/scripts/istio/build_context"
+
+  [[ "$K8S_NAMESPACE" == "team-a" ]]
+}
