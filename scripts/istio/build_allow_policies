@@ -3,6 +3,7 @@
 set -euo pipefail
 
 source "$SERVICE_PATH/scripts/istio/config"
+source "$SERVICE_PATH/scripts/istio/path_utils"
 
 echo "=== Building Istio ALLOW AuthorizationPolicies ==="
 
@@ -115,7 +116,7 @@ for i in $(seq 0 $((NUM_TUPLES - 1))); do
     --arg service_id        "$SERVICE_ID" \
     --arg link_id           "$LINK_ID" \
     --arg host              "$SCOPE_DOMAIN" \
-    --arg path              "$ROUTE_PATH" \
+    --arg path              "$(authz_path "$ROUTE_PATH")" \
     --arg method            "$METHOD" \
     --argjson groups        "$GROUPS_ARRAY" \
     '{name: $name, gateway_name: $gateway_name, gateway_namespace: $gateway_namespace,

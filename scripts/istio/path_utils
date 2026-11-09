@@ -51,3 +51,17 @@ detect_path_type() {
   path=$(ensure_absolute_path "$path")
   echo "Exact:$path"
 }
+
+# Convert a developer path into an AuthorizationPolicy `paths` value. Istio doesn't
+# understand ":param" segments, so they become path templates: "{*}" matches one
+# segment and a trailing "/*" becomes "/{**}" (templates can't be mixed with "*").
+# Paths without parameters keep Istio's own prefix/suffix "*" matching.
+# Usage: authz_path <path>
+authz_path() {
+  local path
+  path=$(ensure_absolute_path "$1")
+  if [[ "$path" == */:* ]]; then
+    path=$(echo "$path" | sed -E 's#/:[^/]+#/{*}#g; s#/\*$#/{**}#')
+  fi
+  echo "$path"
+}

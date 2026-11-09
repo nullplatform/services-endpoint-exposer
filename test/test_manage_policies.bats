@@ -225,6 +225,24 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   [[ $(grep -c "methods:" "${policies[0]}") -eq 0 ]]
 }
 
+@test "manage_policies: path parameters become Istio path templates" {
+  export AUTH_TYPE="none" ACTION="apply"
+  export CONTEXT=$(context create '[]')
+  export SERVICE_ID="fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd" APPLICATION_ID="179976948"
+  export ROUTES_JSON='[
+    {"methods":["GET"],"path":"/api/users/:id","scope":"users-prod"},
+    {"methods":["PUT"],"path":"/api/users/:id/files/*","scope":"users-prod"},
+    {"methods":["DELETE"],"path":"health","scope":"users-prod"}]'
+
+  run bash "$SERVICE_PATH/scripts/common/manage_policies"
+
+  assert_success
+  grep -q 'paths: \["/api/users/{\*}"\]' "$OUTPUT_DIR"/authorizationpolicy-*.yaml
+  grep -q 'paths: \["/api/users/{\*}/files/{\*\*}"\]' "$OUTPUT_DIR"/authorizationpolicy-*.yaml
+  grep -q 'paths: \["/health"\]' "$OUTPUT_DIR"/authorizationpolicy-*.yaml
+  [[ $(grep -c ':id' "$OUTPUT_DIR"/authorizationpolicy-*.yaml | awk -F: '{s+=$NF} END {print s}') -eq 0 ]]
+}
+
 @test "manage_policies: ALL keeps the groups condition under aws-cognito" {
   export AUTH_TYPE="aws-cognito" ACTION="apply"
   export COGNITO_USER_POOL_ARN="arn:aws:cognito-idp:us-east-1:123456789:userpool/us-east-1_AbCdEf"
