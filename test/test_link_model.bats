@@ -486,16 +486,74 @@ scope_env() {
   assert_output --partial '"scope":"pub"'
 }
 
-@test "build_link_context: without a scope, resolves scopes whose visibility capability is a plain string" {
-  scope_env '[{"id": 1, "slug": "pub", "reachability": "public"}, {"id": 2, "slug": "priv", "reachability": "private"}]'
-  jq -c '.results |= map(.capabilities.visibility |= .reachability)' \
+# Rewrites the visibility capability of the scopes matching $1 (jq filter, default all)
+# into the plain string of their reachability.
+stringify_visibility() {
+  jq -c "(.results[] | select(${1:-true}) | .capabilities.visibility) |= .reachability" \
     "$NP_SCOPE_LIST_FILE" > "$NP_SCOPE_LIST_FILE.tmp" && mv "$NP_SCOPE_LIST_FILE.tmp" "$NP_SCOPE_LIST_FILE"
+}
+
+@test "build_link_context: without a scope, resolves scopes whose visibility capability is a plain string" {
+  # Non-public scopes come first, so treating every string as public would pick one of them.
+  scope_env '[
+    {"id": 1, "slug": "priv", "reachability": "private"},
+    {"id": 2, "slug": "acct", "reachability": "account"},
+    {"id": 3, "slug": "int",  "reachability": "internal"},
+    {"id": 4, "slug": "pub",  "reachability": "external"}
+  ]'
+  stringify_visibility
 
   run_context_script build_link_context ROUTES_JSON
 
   assert_success
   assert_output --partial '"scope":"pub"'
-  [[ "$output" != *"jq: error"* ]]
+}
+
+@test "build_link_context: without a scope, a private service resolves a plain-string private scope" {
+  scope_env '[{"id": 1, "slug": "pub", "reachability": "public"}, {"id": 2, "slug": "priv", "reachability": "private"}]'
+  stringify_visibility
+  export NP_SERVICE_READ_FILE="$TEST_TEMP_DIR/service.json"
+  jq -c '.service | .attributes.visibility = "private"' <<< "$CONTEXT" > "$NP_SERVICE_READ_FILE"
+  export CONTEXT="$(jq -c '.service.attributes = {}' <<< "$CONTEXT")"
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  assert_output --partial '"scope":"priv"'
+}
+
+@test "build_link_context: without a scope, object and string visibilities resolve in the same list" {
+  scope_env '[{"id": 1, "slug": "obj-priv", "reachability": "private"}, {"id": 2, "slug": "str-pub", "reachability": "public"}]'
+  stringify_visibility '.id == 2'
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_success
+  assert_output --partial '"scope":"str-pub"'
+}
+
+@test "build_link_context: without a scope, a scope list jq can't read fails with the jq error" {
+  scope_env '[{"id": 1, "slug": "pub", "reachability": "public"}]'
+  jq -c '.results[0].dimensions = "unexpected"' "$NP_SCOPE_LIST_FILE" > "$NP_SCOPE_LIST_FILE.tmp" \
+    && mv "$NP_SCOPE_LIST_FILE.tmp" "$NP_SCOPE_LIST_FILE"
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_failure
+  assert_output --partial "could not read the scopes of application"
+  assert_output --partial "jq: error"
+  [[ "$output" != *"no public scope running"* ]]
+}
+
+@test "build_link_context: without a scope, an unreadable scope list fails as such, not as no match" {
+  scope_env '[{"id": 1, "slug": "pub", "reachability": "public"}]'
+  echo '{"message": "You are not authorized"}' > "$NP_SCOPE_LIST_FILE"
+
+  run_context_script build_link_context ROUTES_JSON
+
+  assert_failure
+  assert_output --partial "could not list the scopes of application"
+  [[ "$output" != *"no public scope running"* ]]
 }
 
 @test "build_link_context: without a scope, a private service resolves the private scope" {

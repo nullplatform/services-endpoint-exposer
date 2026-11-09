@@ -6,12 +6,13 @@
 # The link form can't offer the scopes (the platform doesn't pass them to the link
 # context), so the scope is resolved from the service's visibility instead: the
 # application's scope in the link's dimensions whose visibility matches (public →
-# reachability public / visibility external, private → anything else) and that has
-# a Kubernetes Service to route to. With several matches the pick is deterministic,
+# "public"/"external", private → anything else; read from capabilities.visibility,
+# as a string or {reachability}, else service.attributes.visibility, else "public")
+# and that has a Kubernetes Service to route to. With several matches the pick is deterministic,
 # never "whatever the API listed first": active scopes first, then the oldest. It is
 # logged with the other candidates and stored on the link (update_link_results), so
 # the developer sees which scope serves the path and can name another one.
-# No match fails.
+# No match fails, and so does a scope list that can't be read.
 #
 # Sourced by build_link_context.
 # Required: CONTEXT, APPLICATION_ID, VISIBILITY (public|private), K8S_NAMESPACE
@@ -21,10 +22,20 @@ LINK_DIMENSIONS=$(echo "$CONTEXT" | jq -c '.link.dimensions // {}')
 
 echo "Resolving the $VISIBILITY scope of application $APPLICATION_ID for dimensions $LINK_DIMENSIONS..."
 
-APP_SCOPES=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json | jq -c '.results // []')
+# stderr goes to a file so a warning on success can't corrupt the JSON.
+ERRORS_FILE=$(mktemp)
+
+# An error body without .results must not read as "no scopes".
+if ! APP_SCOPES=$(np scope list --application_id "$APPLICATION_ID" --limit 200 --format json 2>"$ERRORS_FILE" \
+    | jq -ce '.results | arrays' 2>>"$ERRORS_FILE"); then
+  echo "ERROR: could not list the scopes of application $APPLICATION_ID: $(cat "$ERRORS_FILE")" >&2
+  rm -f "$ERRORS_FILE"
+  exit 1
+fi
 
 if ! K8S_SERVICES=$(kubectl get services -n "$K8S_NAMESPACE" -o json 2>&1); then
   echo "ERROR: could not list Services in $K8S_NAMESPACE: $K8S_SERVICES" >&2
+  rm -f "$ERRORS_FILE"
   exit 1
 fi
 ROUTABLE_SCOPE_IDS=$(echo "$K8S_SERVICES" | jq -c '[.items[].spec.selector.scope_id // empty] | unique')
@@ -43,12 +54,15 @@ if ! CANDIDATES=$(echo "$APP_SCOPES" | jq -c \
    | select($scope_visibility == $visibility)
    | select((.id | tostring) as $id | $routable | index($id))
    | {slug, id, status, created_at: (.created_at // "")}]
-  | sort_by([(.status != "active"), .created_at, .id])' 2>&1); then
-  echo "ERROR: could not read the scopes of application $APPLICATION_ID: $CANDIDATES" >&2
+  | sort_by([(.status != "active"), .created_at, .id])' 2>"$ERRORS_FILE"); then
+  echo "ERROR: could not read the scopes of application $APPLICATION_ID: $(cat "$ERRORS_FILE")" >&2
+  rm -f "$ERRORS_FILE"
   exit 1
 fi
+rm -f "$ERRORS_FILE"
 
-if [[ "$(echo "$CANDIDATES" | jq 'length')" -eq 0 ]]; then
+CANDIDATE_COUNT=$(echo "$CANDIDATES" | jq 'length')
+if [[ "$CANDIDATE_COUNT" -eq 0 ]]; then
   echo "ERROR: application $APPLICATION_ID has no $VISIBILITY scope running in Kubernetes for dimensions $LINK_DIMENSIONS." >&2
   echo "Deploy one, or name the scope on the link." >&2
   exit 1
