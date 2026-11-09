@@ -691,6 +691,62 @@ routes_context() {
   assert_output "[[],[]]"
 }
 
+@test "build_link_context: AUTH_TYPE=none warns about the routes whose groups are ignored" {
+  export AUTH_TYPE=none
+  routes_context '[{"path": "/a", "groups": ["g"], "scope": "s"}, {"path": "/b", "scope": "s"}]'
+
+  run bash "$SERVICE_PATH/scripts/istio/build_link_context"
+
+  assert_success
+  assert_output --partial "WARNING: AUTH_TYPE=none does not authenticate requests"
+  assert_output --partial "open to anyone: /a"
+  [[ "$output" != *"/a, /b"* ]]
+}
+
+@test "build_link_context: AUTH_TYPE=none warns about groups given as a comma string" {
+  export AUTH_TYPE=none
+  routes_context '[{"path": "/a", "groups": "admin,ops", "scope": "s"}, {"path": "/b", "groups": " , ", "scope": "s"}]'
+
+  run bash "$SERVICE_PATH/scripts/istio/build_link_context"
+
+  assert_success
+  assert_output --partial "open to anyone: /a"
+  [[ "$output" != *"/a, /b"* ]]
+}
+
+@test "build_link_context: aws-cognito with groups does not warn about open routes" {
+  routes_context '[{"path": "/a", "groups": ["g"], "scope": "s"}]'
+
+  run bash "$SERVICE_PATH/scripts/istio/build_link_context"
+
+  assert_success
+  [[ "$output" != *"authorized groups are ignored"* ]]
+}
+
+@test "build_link_context: AUTH_TYPE=none without groups does not warn" {
+  export AUTH_TYPE=none
+  routes_context '[{"path": "/a", "scope": "s"}]'
+
+  run bash "$SERVICE_PATH/scripts/istio/build_link_context"
+
+  assert_success
+  [[ "$output" != *"authorized groups are ignored"* ]]
+}
+
+@test "resolve_auth: a delete with AUTH_TYPE=none does not warn about groups" {
+  run bash -c 'CONTEXT="{}" AUTH_TYPE=none LINK_OPERATION=delete ROUTES_JSON='"'"'[{"path":"/a","groups":["g"]}]'"'"' source "$SERVICE_PATH/scripts/istio/resolve_auth"'
+
+  assert_success
+  [[ "$output" != *"authorized groups are ignored"* ]]
+}
+
+@test "resolve_auth: AUTH_TYPE=none names a route with groups and no path" {
+  run bash -c 'CONTEXT="{}" AUTH_TYPE=none ROUTES_JSON='"'"'[{"path":"","groups":["g"]},{"groups":"a"}]'"'"' source "$SERVICE_PATH/scripts/istio/resolve_auth"'
+
+  assert_success
+  assert_output --partial "open to anyone: (no path), (no path)"
+}
+
 @test "build_link_context: unlink only needs the link identity" {
   export CONTEXT="$(jq -c '.parameters = {} | .service.attributes = {} | .service.dimensions = {}' <<< "$CONTEXT")"
   export LINK_OPERATION=delete
