@@ -29,19 +29,24 @@ if ! K8S_SERVICES=$(kubectl get services -n "$K8S_NAMESPACE" -o json 2>&1); then
 fi
 ROUTABLE_SCOPE_IDS=$(echo "$K8S_SERVICES" | jq -c '[.items[].spec.selector.scope_id // empty] | unique')
 
-CANDIDATES=$(echo "$APP_SCOPES" | jq -c \
+# capabilities.visibility is an object ({reachability}) or a plain string, depending on the scope type.
+if ! CANDIDATES=$(echo "$APP_SCOPES" | jq -c \
   --argjson dims "$LINK_DIMENSIONS" \
   --arg visibility "$VISIBILITY" \
   --argjson routable "$ROUTABLE_SCOPE_IDS" '
   [.[]
    | select((.status // "") | IN("deleted", "deleting") | not)
    | select(. as $scope | $dims | to_entries | all(.value == ($scope.dimensions // {})[.key]))
-   | ((.capabilities.visibility.reachability // .service.attributes.visibility // "public") as $r
+   | (((.capabilities.visibility | if type == "object" then .reachability else . end)
+       // .service.attributes.visibility // "public") as $r
       | if $r == "public" or $r == "external" then "public" else "private" end) as $scope_visibility
    | select($scope_visibility == $visibility)
    | select((.id | tostring) as $id | $routable | index($id))
    | {slug, id, status, created_at: (.created_at // "")}]
-  | sort_by([(.status != "active"), .created_at, .id])')
+  | sort_by([(.status != "active"), .created_at, .id])' 2>&1); then
+  echo "ERROR: could not read the scopes of application $APPLICATION_ID: $CANDIDATES" >&2
+  exit 1
+fi
 
 if [[ "$(echo "$CANDIDATES" | jq 'length')" -eq 0 ]]; then
   echo "ERROR: application $APPLICATION_ID has no $VISIBILITY scope running in Kubernetes for dimensions $LINK_DIMENSIONS." >&2
