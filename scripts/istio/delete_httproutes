@@ -8,15 +8,10 @@ set -euo pipefail
 # the host they would serve requests without auth.
 # (The delete workflow never renders the HTTPRoutes, so they go by label.)
 # Each HTTPRoute lives next to its app's Services (resolve_scope_namespace), and
-# the service-id label is unique, so they are deleted in every namespace; without
-# cluster-wide access, only in K8S_NAMESPACE (the previous behavior).
+# the service-id label is unique, so they are deleted in every namespace. Without
+# cluster-wide access the delete fails: deleting only in one namespace would leave
+# routes live that the policies deleted next no longer protect.
 
 source "$SERVICE_PATH/scripts/istio/config"
 
-: "${K8S_NAMESPACE:?K8S_NAMESPACE is required}"
-
-LABELS="nullplatform.com/service-id=$SERVICE_ID"
-if ! kubectl delete httproute --all-namespaces -l "$LABELS" --ignore-not-found; then
-  echo "WARNING: could not delete HTTPRoutes across namespaces; deleting only in $K8S_NAMESPACE"
-  kubectl delete httproute -n "$K8S_NAMESPACE" -l "$LABELS" --ignore-not-found
-fi
+delete_cluster_wide httproute "nullplatform.com/service-id=$SERVICE_ID"

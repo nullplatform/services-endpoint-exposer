@@ -11,7 +11,11 @@
         "schema": {
             "type": "object",
             "$schema": "http://json-schema.org/draft-07/schema#",
-            "required": ["domain_name"],
+            "required": [],
+            "anyOf": [
+                {"required": ["domain_name"]},
+                {"required": ["routes"]}
+            ],
             "uiSchema": {
                 "type": "VerticalLayout",
                 "elements": [

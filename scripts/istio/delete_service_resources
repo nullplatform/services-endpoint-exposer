@@ -10,12 +10,15 @@ source "$SERVICE_PATH/scripts/istio/config"
 
 LABELS="nullplatform.com/managed-by=http-route-access-control,nullplatform.com/service-id=$SERVICE_ID"
 
+# sync_gateway_baseline only stops excluding hosts that a run removed. They are read
+# before anything is deleted: losing them would leave a stale exclusion behind.
+REMOVED_HOSTS=$(kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" -l "$LABELS" -o json \
+  | jq -r '.items[].spec.rules[]?.to[]?.operation.hosts[]?')
+
 # Each link's HTTPRoute lives in its application's namespace.
 echo "Deleting leftover HTTPRoutes for service $SERVICE_ID in every namespace..."
-kubectl delete httproute --all-namespaces -l "$LABELS" --ignore-not-found
+delete_cluster_wide httproute "$LABELS"
 
-# sync_gateway_baseline only stops excluding hosts that a run removed.
-kubectl get authorizationpolicy -n "$GATEWAY_NAMESPACE" -l "$LABELS" -o json \
-  | jq -r '.items[].spec.rules[]?.to[]?.operation.hosts[]?' >> "$OUTPUT_DIR/.authz-removed-hosts" || true
+[[ -n "$REMOVED_HOSTS" ]] && echo "$REMOVED_HOSTS" >> "$OUTPUT_DIR/.authz-removed-hosts"
 echo "Deleting leftover AuthorizationPolicies for service $SERVICE_ID in $GATEWAY_NAMESPACE..."
 kubectl delete authorizationpolicy -n "$GATEWAY_NAMESPACE" -l "$LABELS" --ignore-not-found
