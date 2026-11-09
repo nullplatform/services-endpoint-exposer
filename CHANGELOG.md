@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.1.1...v2.0.0) (2026-11-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* the agent needs cluster-wide list on services and httproutes and cluster-wide delete on httproutes. With a namespaced Role, link create/update, domain service create/delete and legacy service delete now fail.
+
+### Features
+
+* route to apps in their own namespaces ([#58](https://github.com/nullplatform/services-endpoint-exposer/issues/58)) ([5044189](https://github.com/nullplatform/services-endpoint-exposer/commit/504418997f7fde8dd893b0eefbbd0d793a531737))
+
 ## [1.1.1](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.1.0...v1.1.1) (2026-11-02)
 
 
