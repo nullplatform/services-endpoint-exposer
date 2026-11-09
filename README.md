@@ -120,9 +120,25 @@ module "service_definition_channel_association_endpoint_exposer" {
 
 Pin `<tofu-modules version>` to a real tag from [`nullplatform/tofu-modules` releases](https://github.com/nullplatform/tofu-modules/releases) — check its `CHANGELOG.md` for breaking changes before bumping.
 
-Choose the authorization scheme here, at install time. `specs/install` takes a required `auth_type` (`none`, `aws-cognito` or `aws-avp`, no default) and returns it in the `agent_extra_envs` output, together with `INGRESS_TYPE = "istio"`, for the agent module's `extra_envs` (step 2). Copy that variable and output along with the module calls, so the scheme is decided in one place. The agent itself still defaults to `none` when `AUTH_TYPE` is unset.
+Choose the authorization scheme here, at install time. `specs/install` requires `auth_type` and returns it, with `INGRESS_TYPE`, in `agent_extra_envs` for the agent's `extra_envs` (step 2). The variable alone doesn't change the agent: it takes effect once that output reaches the agent. `aws-avp` works only for services created before the domain + links model. Copy the variable and the output along with the module calls:
 
-> **Upgrade note:** `auth_type` is a new required variable of `specs/install`. A project that copies it fails at `plan` until it sets `auth_type`: set it to the agent's current `AUTH_TYPE` (`none` if unset) to keep the same behavior.
+```hcl
+variable "auth_type" {
+  description = "Authorization scheme: none, aws-cognito or aws-avp"
+  type        = string
+
+  validation {
+    condition     = contains(["none", "aws-cognito", "aws-avp"], var.auth_type)
+    error_message = "auth_type must be one of: none, aws-cognito, aws-avp."
+  }
+}
+
+output "agent_extra_envs" {
+  value = { INGRESS_TYPE = "istio", AUTH_TYPE = var.auth_type }
+}
+```
+
+> **Upgrade note:** `auth_type` is a new required variable of `specs/install`: `plan` fails until it is set. Set it to the agent's current `AUTH_TYPE`. If the agent has none set, check the stored services before choosing `none`: unset is not the same as `none` (see [step 2](#2-set-agent-environment-variables)), and `none` drops auth from services that have it.
 
 ### 2. Set agent environment variables
 
@@ -260,7 +276,7 @@ module "agent" {
 }
 ```
 
-If you copied `auth_type` and `agent_extra_envs` from `specs/install`, pass that output instead of the first two entries: `extra_envs = merge(<agent_extra_envs>, { COGNITO_... })`.
+With the `agent_extra_envs` output from step 1, drop the `INGRESS_TYPE` and `AUTH_TYPE` entries and merge it in instead, e.g. `extra_envs = merge(local.agent_extra_envs, { COGNITO_USER_POOL_ARN_DEV = "..." })`.
 
 ### 3. Register the `container-scope-override` on the target scope
 

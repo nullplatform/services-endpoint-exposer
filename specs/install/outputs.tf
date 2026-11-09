@@ -14,7 +14,7 @@ output "service_channel_id" {
 }
 
 output "agent_extra_envs" {
-  description = "Environment for the agent module's extra_envs (merge in the scheme's COGNITO_*/AVP_* variables)"
+  description = "INGRESS_TYPE and AUTH_TYPE for the agent module's extra_envs; merge in the scheme's COGNITO_*/AVP_* variables"
   value = {
     INGRESS_TYPE = "istio"
     AUTH_TYPE    = var.auth_type

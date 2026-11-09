@@ -14,10 +14,10 @@ variable "tags_selectors" {
   type        = map(string)
 }
 
-# No default: each installation picks its scheme on purpose. The agent reads it from
-# its environment, so it reaches the agent through the agent_extra_envs output.
+# No default: each installation picks its scheme on purpose. The channel modules can't set
+# env vars, so it reaches the agent only through the agent_extra_envs output.
 variable "auth_type" {
-  description = "Authorization scheme of the installation: none, aws-cognito or aws-avp. Pass the agent_extra_envs output to the agent module's extra_envs so the agent uses it"
+  description = "Authorization scheme: none, aws-cognito or aws-avp (aws-avp works only for services created before the domain + links model)"
   type        = string
 
   validation {
