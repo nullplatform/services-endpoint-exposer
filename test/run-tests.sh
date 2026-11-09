@@ -53,6 +53,7 @@ TEST_FILES=(
   "test_replace_allow_policies.bats"
   "test_integration.bats"
   "test_link_model.bats"
+  "test_path_utils.bats"
 )
 
 FAILED=0

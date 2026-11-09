@@ -237,10 +237,29 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   run bash "$SERVICE_PATH/scripts/common/manage_policies"
 
   assert_success
-  grep -q 'paths: \["/api/users/{\*}"\]' "$OUTPUT_DIR"/authorizationpolicy-*.yaml
-  grep -q 'paths: \["/api/users/{\*}/files/{\*\*}"\]' "$OUTPUT_DIR"/authorizationpolicy-*.yaml
-  grep -q 'paths: \["/health"\]' "$OUTPUT_DIR"/authorizationpolicy-*.yaml
-  [[ $(grep -c ':id' "$OUTPUT_DIR"/authorizationpolicy-*.yaml | awk -F: '{s+=$NF} END {print s}') -eq 0 ]]
+  # Each route's method stays paired with its own converted path.
+  local get_policy put_policy delete_policy
+  get_policy=$(grep -l 'methods: \["GET"\]' "$OUTPUT_DIR"/authorizationpolicy-*.yaml)
+  put_policy=$(grep -l 'methods: \["PUT"\]' "$OUTPUT_DIR"/authorizationpolicy-*.yaml)
+  delete_policy=$(grep -l 'methods: \["DELETE"\]' "$OUTPUT_DIR"/authorizationpolicy-*.yaml)
+  assert_file_contains "$get_policy" 'paths: \["/api/users/{\*}"\]'
+  assert_file_contains "$put_policy" 'paths: \["/api/users/{\*}/files/{\*\*}"\]'
+  assert_file_contains "$delete_policy" 'paths: \["/health"\]'
+  ! grep -q ':id' "$OUTPUT_DIR"/authorizationpolicy-*.yaml
+}
+
+@test "manage_policies: the policy name hashes the route's original path, so existing policies keep their name" {
+  export AUTH_TYPE="none" ACTION="apply"
+  export CONTEXT=$(context create '[]')
+  export SERVICE_ID="fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd" APPLICATION_ID="179976948"
+  export ROUTES_JSON='[{"methods":["GET"],"path":"/api/users/:id","scope":"users-prod"}]'
+
+  run bash "$SERVICE_PATH/scripts/common/manage_policies"
+
+  assert_success
+  local hash
+  hash=$(echo "users.example.comGET/api/users/:id" | { md5 2>/dev/null || md5sum; } | cut -c1-8)
+  assert_file_exists "$OUTPUT_DIR/authorizationpolicy-fbcf7a60-public-${hash}.yaml"
 }
 
 @test "manage_policies: ALL keeps the groups condition under aws-cognito" {
