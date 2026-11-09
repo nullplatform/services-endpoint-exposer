@@ -120,6 +120,10 @@ module "service_definition_channel_association_endpoint_exposer" {
 
 Pin `<tofu-modules version>` to a real tag from [`nullplatform/tofu-modules` releases](https://github.com/nullplatform/tofu-modules/releases) — check its `CHANGELOG.md` for breaking changes before bumping.
 
+Choose the authorization scheme here, at install time. `specs/install` takes a required `auth_type` (`none`, `aws-cognito` or `aws-avp`, no default) and returns it in the `agent_extra_envs` output, together with `INGRESS_TYPE = "istio"`, for the agent module's `extra_envs` (step 2). Copy that variable and output along with the module calls, so the scheme is decided in one place. The agent itself still defaults to `none` when `AUTH_TYPE` is unset.
+
+> **Upgrade note:** `auth_type` is a new required variable of `specs/install`. A project that copies it fails at `plan` until it sets `auth_type`: set it to the agent's current `AUTH_TYPE` (`none` if unset) to keep the same behavior.
+
 ### 2. Set agent environment variables
 
 Auth configuration is resolved at **runtime from the agent's environment**, not from the developer UI. Set these variables in the agent's `extra_envs` (Helm) or equivalent.
@@ -249,12 +253,14 @@ module "agent" {
 
   extra_envs = {
     INGRESS_TYPE                     = "istio"
-    AUTH_TYPE                        = "aws-cognito"
+    AUTH_TYPE                        = "aws-cognito" # the auth_type chosen in step 1
     COGNITO_USER_POOL_ARN_DEV        = "arn:aws:cognito-idp:us-east-1:123456789:userpool/us-east-1_AbCdEf"
     COGNITO_USER_POOL_ARN_PRODUCTION = "arn:aws:cognito-idp:us-east-1:123456789:userpool/us-east-1_XyZwVu"
   }
 }
 ```
+
+If you copied `auth_type` and `agent_extra_envs` from `specs/install`, pass that output instead of the first two entries: `extra_envs = merge(<agent_extra_envs>, { COGNITO_... })`.
 
 ### 3. Register the `container-scope-override` on the target scope
 

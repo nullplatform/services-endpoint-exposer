@@ -14,6 +14,18 @@ variable "tags_selectors" {
   type        = map(string)
 }
 
+# No default: each installation picks its scheme on purpose. The agent reads it from
+# its environment, so it reaches the agent through the agent_extra_envs output.
+variable "auth_type" {
+  description = "Authorization scheme of the installation: none, aws-cognito or aws-avp. Pass the agent_extra_envs output to the agent module's extra_envs so the agent uses it"
+  type        = string
+
+  validation {
+    condition     = contains(["none", "aws-cognito", "aws-avp"], var.auth_type)
+    error_message = "auth_type must be one of: none, aws-cognito, aws-avp."
+  }
+}
+
 variable "tofu_modules_ref" {
   description = "Git ref (tag) of nullplatform/tofu-modules to pull the service_definition / service_definition_agent_association / scope_definition_agent_association modules from"
   type        = string
