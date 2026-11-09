@@ -120,7 +120,7 @@ module "service_definition_channel_association_endpoint_exposer" {
 
 Pin `<tofu-modules version>` to a real tag from [`nullplatform/tofu-modules` releases](https://github.com/nullplatform/tofu-modules/releases) — check its `CHANGELOG.md` for breaking changes before bumping.
 
-Choose the authorization scheme here, at install time. `specs/install` requires `auth_type` and returns it, with `INGRESS_TYPE`, in `agent_extra_envs` for the agent's `extra_envs` (step 2). The variable alone doesn't change the agent: it takes effect once that output reaches the agent. `aws-avp` works only for services created before the domain + links model. Copy the variable and the output along with the module calls:
+Choose the authorization scheme here, at install time. `specs/install` requires `auth_type` and returns it, with `INGRESS_TYPE`, in `agent_extra_envs` for the agent's `extra_envs` (step 2). The variable alone doesn't change the agent: it takes effect once that output reaches the agent. `aws-avp` works only for services created before the domain + links model. Copy the variable, the local and the output along with the module calls. The agent module reads the local: a root module can't read its own outputs.
 
 ```hcl
 variable "auth_type" {
@@ -133,8 +133,12 @@ variable "auth_type" {
   }
 }
 
+locals {
+  agent_extra_envs = { INGRESS_TYPE = "istio", AUTH_TYPE = var.auth_type }
+}
+
 output "agent_extra_envs" {
-  value = { INGRESS_TYPE = "istio", AUTH_TYPE = var.auth_type }
+  value = local.agent_extra_envs
 }
 ```
 
@@ -276,7 +280,7 @@ module "agent" {
 }
 ```
 
-With the `agent_extra_envs` output from step 1, drop the `INGRESS_TYPE` and `AUTH_TYPE` entries and merge it in instead, e.g. `extra_envs = merge(local.agent_extra_envs, { COGNITO_USER_POOL_ARN_DEV = "..." })`.
+With the `agent_extra_envs` local from step 1, drop the `INGRESS_TYPE` and `AUTH_TYPE` entries and merge it in instead, e.g. `extra_envs = merge(local.agent_extra_envs, { COGNITO_USER_POOL_ARN_DEV = "..." })`.
 
 ### 3. Register the `container-scope-override` on the target scope
 
