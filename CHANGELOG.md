@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.1.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v2.0.0...v2.1.0) (2026-11-10)
+
+
+### Features
+
+* **install:** require auth_type and export the agent's exposer env ([#66](https://github.com/nullplatform/services-endpoint-exposer/issues/66)) ([4e2473b](https://github.com/nullplatform/services-endpoint-exposer/commit/4e2473bae710c2d264470def72bef7dd0c85ab27))
+
+
+### Bug Fixes
+
+* **resolve_link_scope:** fail on an unreadable scope list instead of reporting no scope ([#62](https://github.com/nullplatform/services-endpoint-exposer/issues/62)) ([6aa892c](https://github.com/nullplatform/services-endpoint-exposer/commit/6aa892c02982f59187fa82083652531818df6c28))
+* translate path parameters in AuthorizationPolicy paths ([#63](https://github.com/nullplatform/services-endpoint-exposer/issues/63)) ([f56b684](https://github.com/nullplatform/services-endpoint-exposer/commit/f56b68424af43da885ab8c121436282107e279c9))
+
 ## [2.0.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v1.1.1...v2.0.0) (2026-11-09)
 
 
