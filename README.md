@@ -120,6 +120,30 @@ module "service_definition_channel_association_endpoint_exposer" {
 
 Pin `<tofu-modules version>` to a real tag from [`nullplatform/tofu-modules` releases](https://github.com/nullplatform/tofu-modules/releases) — check its `CHANGELOG.md` for breaking changes before bumping.
 
+Choose the authorization scheme here, at install time. `specs/install` requires `auth_type` and returns it, with `INGRESS_TYPE`, in `agent_extra_envs` for the agent's `extra_envs` (step 2). The variable alone doesn't change the agent: it takes effect once that output reaches the agent. `aws-avp` works only for services created before the domain + links model. Copy the variable, the local and the output along with the module calls. The agent module reads the local: a root module can't read its own outputs.
+
+```hcl
+variable "auth_type" {
+  description = "Authorization scheme: none, aws-cognito or aws-avp"
+  type        = string
+
+  validation {
+    condition     = contains(["none", "aws-cognito", "aws-avp"], var.auth_type)
+    error_message = "auth_type must be one of: none, aws-cognito, aws-avp."
+  }
+}
+
+locals {
+  agent_extra_envs = { INGRESS_TYPE = "istio", AUTH_TYPE = var.auth_type }
+}
+
+output "agent_extra_envs" {
+  value = local.agent_extra_envs
+}
+```
+
+> **Upgrade note:** `auth_type` is a new required variable of `specs/install`: `plan` fails until it is set. Set it to the agent's current `AUTH_TYPE`. If the agent has none set, check the stored services before choosing `none`: unset is not the same as `none` (see [step 2](#2-set-agent-environment-variables)), and `none` drops auth from services that have it.
+
 ### 2. Set agent environment variables
 
 Auth configuration is resolved at **runtime from the agent's environment**, not from the developer UI. Set these variables in the agent's `extra_envs` (Helm) or equivalent.
@@ -249,12 +273,14 @@ module "agent" {
 
   extra_envs = {
     INGRESS_TYPE                     = "istio"
-    AUTH_TYPE                        = "aws-cognito"
+    AUTH_TYPE                        = "aws-cognito" # the auth_type chosen in step 1
     COGNITO_USER_POOL_ARN_DEV        = "arn:aws:cognito-idp:us-east-1:123456789:userpool/us-east-1_AbCdEf"
     COGNITO_USER_POOL_ARN_PRODUCTION = "arn:aws:cognito-idp:us-east-1:123456789:userpool/us-east-1_XyZwVu"
   }
 }
 ```
+
+With the `agent_extra_envs` local from step 1, drop the `INGRESS_TYPE` and `AUTH_TYPE` entries and merge it in instead, e.g. `extra_envs = merge(local.agent_extra_envs, { COGNITO_USER_POOL_ARN_DEV = "..." })`.
 
 ### 3. Register the `container-scope-override` on the target scope
 
