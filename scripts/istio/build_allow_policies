@@ -3,6 +3,7 @@
 set -euo pipefail
 
 source "$SERVICE_PATH/scripts/istio/config"
+source "$SERVICE_PATH/scripts/istio/path_utils"
 
 echo "=== Building Istio ALLOW AuthorizationPolicies ==="
 
@@ -107,6 +108,9 @@ for i in $(seq 0 $((NUM_TUPLES - 1))); do
   ROUTE_HASH="${ROUTE_HASH:0:8}"
   POLICY_NAME="${SERVICE_ID_SHORT}-${GATEWAY_SUFFIX}-${ROUTE_HASH}"
 
+  # Assigned on its own line so a failure stops the build instead of rendering paths: [""].
+  AUTHZ_PATH=$(authz_path "$ROUTE_PATH")
+
   CONTEXT_FILE="$OUTPUT_DIR/authorizationpolicy-${POLICY_NAME}-ctx.json"
   jq -n \
     --arg name              "$POLICY_NAME" \
@@ -115,7 +119,7 @@ for i in $(seq 0 $((NUM_TUPLES - 1))); do
     --arg service_id        "$SERVICE_ID" \
     --arg link_id           "$LINK_ID" \
     --arg host              "$SCOPE_DOMAIN" \
-    --arg path              "$ROUTE_PATH" \
+    --arg path              "$AUTHZ_PATH" \
     --arg method            "$METHOD" \
     --argjson groups        "$GROUPS_ARRAY" \
     '{name: $name, gateway_name: $gateway_name, gateway_namespace: $gateway_namespace,

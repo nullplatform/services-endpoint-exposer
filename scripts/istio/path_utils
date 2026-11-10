@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Path utilities shared by the HTTPRoute builders (build_ingress_with_rule) and the
-# link path-conflict check (check_link_conflict), so both convert a developer path
-# into the same Gateway API match value.
+# Path utilities shared by the HTTPRoute builders (build_ingress_with_rule), the
+# link path-conflict check (check_link_conflict) and the AuthorizationPolicy builder
+# (build_allow_policies), so they all interpret a developer path the same way.
 
 # Ensure a path starts with "/". The Kubernetes Gateway API rejects
 # non-absolute values for the `Exact` and `PathPrefix` match types with:
@@ -23,6 +23,16 @@ ensure_absolute_path() {
 # Returns: "type:value" format
 detect_path_type() {
   local path="$1"
+
+  validate_param_wildcards "$path" || return 1
+
+  # Parameters with a trailing wildcard: one segment per param, then anything below.
+  if [[ "$path" == *:* && "$path" == */\* ]]; then
+    local regex_prefix
+    regex_prefix=$(echo "${path%/\*}" | sed 's/:[^/]*/[^\/]+/g')
+    echo "RegularExpression:${regex_prefix}(/.*)?"
+    return
+  fi
 
   # Check for wildcard (*) - use PathPrefix
   if [[ "$path" == *"*"* ]]; then
@@ -50,4 +60,33 @@ detect_path_type() {
   # Default: Exact match
   path=$(ensure_absolute_path "$path")
   echo "Exact:$path"
+}
+
+# A ":param" path may only carry "*" as its last segment ("/users/:id/*"): neither
+# the HTTPRoute regex nor Istio's path templates can express a "*" elsewhere.
+# Usage: validate_param_wildcards <path>
+validate_param_wildcards() {
+  local path="$1" body="${1%/\*}"
+  if [[ "$path" == *:* && "$body" == *"*"* ]]; then
+    echo "ERROR: path '$path' mixes :parameters with a '*' that is not its last segment" >&2
+    return 1
+  fi
+}
+
+# Convert a developer path into an AuthorizationPolicy `paths` value, matching the
+# same requests as the HTTPRoute (see detect_path_type). Istio doesn't understand
+# ":param", so params become the "{*}" template (one segment) and a trailing "/*"
+# becomes "/{**}" (Istio rejects "*" mixed with templates in one path). Paths
+# without params pass through: Istio only treats a leading or trailing "*" as a wildcard.
+# Only whole-segment params ("/:id") convert: templates can't sit inside a segment.
+# Usage: authz_path <path>
+# Returns: the path for AuthorizationPolicy.spec.rules[].to[].operation.paths
+authz_path() {
+  local path
+  validate_param_wildcards "$1" || return 1
+  path=$(ensure_absolute_path "$1")
+  if [[ "$path" == */:* ]]; then
+    path=$(echo "$path" | sed -E 's#/:[^/]+#/{*}#g; s#/\*$#/{**}#')
+  fi
+  echo "$path"
 }
