@@ -60,7 +60,7 @@ nullplatform allows a single link per application and dimensions, so the link ca
 
 | Route field | Description |
 |---|---|
-| **Path** | Path on the service's domain. Supports exact (`/api/users`), parameterized (`/api/users/:id`) and wildcard (`/api/users/*`). Each path can appear once per link |
+| **Path** | Path on the service's domain. Supports exact (`/api/users`), parameterized (`/api/users/:id`) and wildcard (`/api/users/*`), also combined (`/api/users/:id/files/*`). A parameter is a segment that starts with `:` (`/users/:id`); a `:` anywhere else is a literal character (`/v1/things:batchGet`). With parameters, `*` can only be the last segment; other forms fail the link. A wildcard authorizes what's below the prefix, not the prefix itself: with `/api/users/*`, a request to `/api/users` answers 403, so add it as its own route if needed. Each path can appear once per link |
 | **Verbs** | Optional, `ALL` (any method) by default. Pick HTTP methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) to expose only those. `ALL` overrides any other verb selected on the same route |
 | **Scope** | Optional. Slug of the linking application's scope that receives the traffic. When empty, the agent picks (once for the whole link) the application's scope in the link's dimensions whose visibility matches the service (`public` ↔ reachability `public`, `private` ↔ anything else) and that has a Kubernetes Service to route to. A single active match is used, even next to inactive ones; with no active match, a single inactive one is used. Its slug is stored on the link. Several active matches, or several inactive ones and no active one, fail and ask for the slug, so the link never guesses between scopes. No match fails too. The form can't list the scopes: the platform doesn't pass them to the link context |
 | **Authorized Groups** | Groups allowed to call the path. Required with `aws-cognito`: create and update fail without them. Ignored with `AUTH_TYPE=none`: the route is open to anyone, and create/update log a `WARNING` naming the routes whose groups were dropped |
@@ -86,7 +86,7 @@ Services that declare their routes inline (`routes` attribute, no `domain_name`)
 ### Prerequisites
 
 - A running nullplatform agent with `kubectl` access to the cluster
-- Istio installed with Gateway API CRDs
+- Istio installed with Gateway API CRDs (1.22+ for routes with `:parameters`, which use AuthorizationPolicy path templates)
 - `gateway-public` and `gateway-private` Gateway resources deployed
 
 ### 1. Register the service specification and its notification channel
