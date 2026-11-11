@@ -835,6 +835,16 @@ conflict_env() {
   assert_output --partial "already exposed by link link-other"
 }
 
+@test "check_link_conflict: a path the builders reject fails before anything is compared" {
+  conflict_env "/api/*/:id" '["GET"]'
+  httproute_items '[]' > "$KUBECTL_HTTPROUTES_FILE"
+
+  run bash "$SERVICE_PATH/scripts/istio/check_link_conflict"
+
+  assert_failure
+  assert_output --partial "mixes :parameters with a '*'"
+}
+
 @test "check_link_conflict: compares the converted Gateway API path (wildcards)" {
   conflict_env "/files/*" '["GET"]'
   httproute_items '[{"name": "r1", "link_id": "link-other", "host": "api.acme.com", "path": "/files", "method": "GET"}]' > "$KUBECTL_HTTPROUTES_FILE"

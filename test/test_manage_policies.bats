@@ -288,6 +288,31 @@ ROUTES_WITH_GROUPS='[{"methods":["GET"],"path":"/api/users","scope":"users-prod"
   ! grep -q ':id' "$OUTPUT_DIR"/authorizationpolicy-*.yaml
 }
 
+@test "manage_policies: a ':' that doesn't start a segment stays literal in the policy" {
+  export AUTH_TYPE="none" ACTION="apply"
+  export CONTEXT=$(context create '[]')
+  export SERVICE_ID="fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd" APPLICATION_ID="179976948"
+  export ROUTES_JSON='[{"methods":["POST"],"path":"/v1/things:batchGet","scope":"users-prod"}]'
+
+  run bash "$SERVICE_PATH/scripts/common/manage_policies"
+
+  assert_success
+  assert_file_contains "$(ls "$OUTPUT_DIR"/authorizationpolicy-*.yaml)" 'paths: \["/v1/things:batchGet"\]'
+}
+
+@test "manage_policies: a path the policy can't express fails the build without rendering a policy" {
+  export AUTH_TYPE="none" ACTION="apply"
+  export CONTEXT=$(context create '[]')
+  export SERVICE_ID="fbcf7a60-8ca8-4bf2-b1b5-5c59bb5bc4fd" APPLICATION_ID="179976948"
+  export ROUTES_JSON='[{"methods":["GET"],"path":"/api/*/:id","scope":"users-prod"}]'
+
+  run bash "$SERVICE_PATH/scripts/common/manage_policies"
+
+  assert_failure
+  assert_output --partial "'/api/*/:id'"
+  ! ls "$OUTPUT_DIR"/authorizationpolicy-*.yaml 2>/dev/null
+}
+
 @test "manage_policies: the policy name hashes the route's original path, so existing policies keep their name" {
   export AUTH_TYPE="none" ACTION="apply"
   export CONTEXT=$(context create '[]')

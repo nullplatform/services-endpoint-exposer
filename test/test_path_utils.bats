@@ -49,9 +49,30 @@ setup() {
   assert_output "/a/{*}"
 }
 
-@test "authz_path: a parameter inside a segment is left as is" {
-  run authz_path "/a:id"
-  assert_output "/a:id"
+@test "authz_path: a ':' that doesn't start a segment is literal" {
+  run authz_path "/v1/things:batchGet"
+  assert_success
+  assert_output "/v1/things:batchGet"
+  run authz_path "/v1/things:batchGet/*"
+  assert_output "/v1/things:batchGet/*"
+  run authz_path "/v1/things:batch/:id"
+  assert_output "/v1/things:batch/{*}"
+}
+
+@test "authz_path: a parameter followed by more text in its segment is still one template" {
+  run authz_path "/a/:id:x"
+  assert_success
+  assert_output "/a/{*}"
+}
+
+@test "detect_path_type: a ':' that doesn't start a segment is literal" {
+  run detect_path_type "/v1/things:batchGet"
+  assert_success
+  assert_output "Exact:/v1/things:batchGet"
+  run detect_path_type "/v1/things:batchGet/*"
+  assert_output "PathPrefix:/v1/things:batchGet"
+  run detect_path_type "/v1/things:batch/:id"
+  assert_output "RegularExpression:/v1/things:batch/[^/]+"
 }
 
 @test "authz_path: a parameter mixed with a non-trailing wildcard fails" {
@@ -82,4 +103,77 @@ setup() {
   run detect_path_type "/a/*/:id"
   assert_failure
   assert_output --partial "mixes :parameters with a '*'"
+}
+
+@test "both builders reject the same paths" {
+  local p
+  for p in "/a/*/:id" "/a/:id*" "/:x/*/y" "a/*/:id"; do
+    run detect_path_type "$p"
+    assert_failure
+    run authz_path "$p"
+    assert_failure
+  done
+}
+
+@test "both builders read a ':' that doesn't name a segment parameter as literal" {
+  local p
+  for p in "/a:id" "/a/b:id/c" "/a/:/b" "/:" "/a/:"; do
+    run detect_path_type "$p"
+    assert_output "Exact:$p"
+    run authz_path "$p"
+    assert_output "$p"
+  done
+}
+
+# build_ingress_with_rule runs create_http_rule inside command substitutions,
+# where set -e doesn't apply: the rejection must still stop the build.
+@test "build_ingress_with_rule: a rejected path stops the build of an empty HTTPRoute" {
+  local tmp hr
+  tmp=$(mktemp -d)
+  hr="$tmp/hr.yaml"
+  cat > "$hr" <<'YAML'
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: test-hr}
+spec:
+  hostnames: [a.example.com]
+  parentRefs: [{name: gateway-public}]
+  rules:
+    - matches: [{path: {type: PathPrefix, value: /}}]
+      backendRefs: [{name: response-404, port: 80, weight: 0}]
+YAML
+  export OUTPUT_DIR="$tmp" SCOPE_ID=1 K8S_NAMESPACE=ns SERVICE_ID=s HTTPROUTE_FILE="$hr"
+  export SCOPE_RULE='{"service":{"name":"svc","port":{"number":8080}},"blue_green_annotation":null}'
+
+  RULE_PATH="/a/*/:id" run bash "$SERVICE_PATH/scripts/istio/build_ingress_with_rule"
+
+  assert_failure
+  assert_output --partial "mixes :parameters with a '*'"
+  [[ "$(yq '.spec.rules[0].backendRefs[0].name' "$hr")" == "response-404" ]]
+  rm -rf "$tmp"
+}
+
+@test "build_ingress_with_rule: a rejected path stops the build of a non-empty HTTPRoute" {
+  local tmp hr
+  tmp=$(mktemp -d)
+  hr="$tmp/hr.yaml"
+  cat > "$hr" <<'YAML'
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: {name: test-hr}
+spec:
+  hostnames: [a.example.com]
+  parentRefs: [{name: gateway-public}]
+  rules:
+    - matches: [{path: {type: Exact, value: /other}}]
+      backendRefs: [{name: svc, port: 8080}]
+YAML
+  export OUTPUT_DIR="$tmp" SCOPE_ID=1 K8S_NAMESPACE=ns SERVICE_ID=s HTTPROUTE_FILE="$hr"
+  export SCOPE_RULE='{"service":{"name":"svc","port":{"number":8080}},"blue_green_annotation":null}'
+
+  RULE_PATH="/a/*/:id" run bash "$SERVICE_PATH/scripts/istio/build_ingress_with_rule"
+
+  assert_failure
+  [[ "$(yq '.spec.rules | length' "$hr")" == "1" ]]
+  rm -rf "$tmp"
 }

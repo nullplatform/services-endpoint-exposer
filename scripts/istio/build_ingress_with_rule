@@ -55,7 +55,8 @@ create_http_rule() {
 
   # Detect path type and get the converted path value
   local path_type_value
-  path_type_value=$(detect_path_type "$rule_path")
+  # Called from command substitutions, where set -e doesn't apply: fail explicitly.
+  path_type_value=$(detect_path_type "$rule_path") || return 1
   local path_type="${path_type_value%%:*}"
   local path_value="${path_type_value#*:}"
 
@@ -243,7 +244,7 @@ replace_existing_rule() {
   local new_rule
 
   # Create the new rule
-  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method")
+  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method") || return 1
 
   # Replace the existing rule at the found index
   updated_hr=$(echo "$hr_yaml" | yq eval -o=json '.' | \
@@ -264,7 +265,7 @@ add_new_rule() {
   local new_rule
 
   # Create the new http rule
-  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method")
+  new_rule=$(create_http_rule "$rule_path" "$service_json" "$blue_green_config" "$method") || return 1
 
   # Add the new rule to the existing rules array
   updated_hr=$(echo "$hr_yaml" | yq eval ".spec.rules += [$new_rule]")

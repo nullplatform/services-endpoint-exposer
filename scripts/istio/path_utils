@@ -19,17 +19,25 @@ ensure_absolute_path() {
   fi
 }
 
+# A parameter is a segment that starts with ":" and names it ("/users/:id"). A ":"
+# anywhere else ("/v1/things:batchGet", a bare "/:") is a literal character.
+# Usage: has_param <path>
+has_param() {
+  local re='(^|/):[^/]'
+  [[ "$1" =~ $re ]]
+}
+
 # Detect path type and convert path value accordingly
 # Returns: "type:value" format
 detect_path_type() {
   local path="$1"
 
-  validate_param_wildcards "$path" || return 1
+  validate_param_path "$path" || return 1
 
   # Parameters with a trailing wildcard: one segment per param, then anything below.
-  if [[ "$path" == *:* && "$path" == */\* ]]; then
+  if has_param "$path" && [[ "$path" == */\* ]]; then
     local regex_prefix
-    regex_prefix=$(echo "${path%/\*}" | sed 's/:[^/]*/[^\/]+/g')
+    regex_prefix=$(echo "${path%/\*}" | sed -E 's#(^|/):[^/]+#\1[^/]+#g')
     echo "RegularExpression:${regex_prefix}(/.*)?"
     return
   fi
@@ -47,10 +55,10 @@ detect_path_type() {
   fi
 
   # Check for path parameters (:param) - use RegularExpression
-  if [[ "$path" == *:* ]]; then
+  if has_param "$path"; then
     # Replace :param with [^/]+
     local regex_path
-    regex_path=$(echo "$path" | sed 's/:[^/]*/[^\/]+/g')
+    regex_path=$(echo "$path" | sed -E 's#(^|/):[^/]+#\1[^/]+#g')
     # RegularExpression values are not required to be absolute by Gateway API,
     # so we leave them untouched.
     echo "RegularExpression:$regex_path"
@@ -62,12 +70,12 @@ detect_path_type() {
   echo "Exact:$path"
 }
 
-# A ":param" path may only carry "*" as its last segment ("/users/:id/*"): neither
-# the HTTPRoute regex nor Istio's path templates can express a "*" elsewhere.
-# Usage: validate_param_wildcards <path>
-validate_param_wildcards() {
+# A path with parameters may only carry "*" as its last segment ("/users/:id/*"):
+# neither the HTTPRoute regex nor Istio's path templates can express it elsewhere.
+# Usage: validate_param_path <path>
+validate_param_path() {
   local path="$1" body="${1%/\*}"
-  if [[ "$path" == *:* && "$body" == *"*"* ]]; then
+  if has_param "$path" && [[ "$body" == *"*"* ]]; then
     echo "ERROR: path '$path' mixes :parameters with a '*' that is not its last segment" >&2
     return 1
   fi
@@ -78,14 +86,13 @@ validate_param_wildcards() {
 # ":param", so params become the "{*}" template (one segment) and a trailing "/*"
 # becomes "/{**}" (Istio rejects "*" mixed with templates in one path). Paths
 # without params pass through: Istio only treats a leading or trailing "*" as a wildcard.
-# Only whole-segment params ("/:id") convert: templates can't sit inside a segment.
 # Usage: authz_path <path>
 # Returns: the path for AuthorizationPolicy.spec.rules[].to[].operation.paths
 authz_path() {
   local path
-  validate_param_wildcards "$1" || return 1
+  validate_param_path "$1" || return 1
   path=$(ensure_absolute_path "$1")
-  if [[ "$path" == */:* ]]; then
+  if has_param "$path"; then
     path=$(echo "$path" | sed -E 's#/:[^/]+#/{*}#g; s#/\*$#/{**}#')
   fi
   echo "$path"
