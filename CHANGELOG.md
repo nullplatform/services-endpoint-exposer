@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.1](https://github.com/nullplatform/services-endpoint-exposer/compare/v2.1.0...v2.1.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* read ':' the same way in HTTPRoutes and policies, and stop the build on a rejected path ([#68](https://github.com/nullplatform/services-endpoint-exposer/issues/68)) ([00d92b1](https://github.com/nullplatform/services-endpoint-exposer/commit/00d92b150ad1403d3bee3efba98314900cd92e44))
+
 ## [2.1.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v2.0.0...v2.1.0) (2026-11-10)
 
 
