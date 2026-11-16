@@ -79,70 +79,42 @@ Services that declare their routes inline (`routes` attribute, no `domain_name`)
 
 ---
 
-## Installation with tofu modules
+## Install in your organization
 
-> **The HCL in this section is illustrative, not a module to reference directly.** Every snippet below — including [`specs/install/`](./specs/install) and [`specs/requirements/aws/`](./specs/requirements/aws) — exists in this repository as a working reference implementation (and test fixture), not as a published module. Don't add `source = "git::https://github.com/nullplatform/services-endpoint-exposer.git//specs/install?ref=..."` (or `//specs/requirements/aws`) to your own project. Copy the underlying `nullplatform/tofu-modules` module calls shown below into your project's own `.tf` files and adapt the values (`nrn`, `tags_selectors`, refs, etc.) instead. This keeps your project's module versions, api keys, and scope wiring under your own control instead of an indirect reference to this repo.
+The service is published once as the package `np-http-route-access-control` (specification "Endpoint Exposer"), visible to every organization. You do not copy its specs: you install the package and use it read-only.
+
+How installing a package works, how it coexists with a copy you registered, how to upgrade, and when to fork instead are in the [package installation guide](https://docs.nullplatform.com/docs/packages/install); this section has what is specific to this service.
 
 ### Prerequisites
 
-- A running nullplatform agent with `kubectl` access to the cluster
+- A running nullplatform agent with `kubectl` access to the cluster, `public.ecr.aws/nullplatform/*` in its `worker.allowedRegistries` and `np-http-route-access-control` in its `worker_orchestrated_packages` (the worker then runs as the agent's service account, the one with the RBAC in step 2)
 - Istio installed with Gateway API CRDs (1.22+ for routes with `:parameters`, which use AuthorizationPolicy path templates)
 - `gateway-public` and `gateway-private` Gateway resources deployed
 
-### 1. Register the service specification and its notification channel
+### 1. Install the package
 
-The following two module calls (copied from [`specs/install/main.tf`](./specs/install/main.tf) — read that file for the definitive, up-to-date version) register this repo's service spec/entrypoint with nullplatform and wire a notification channel so an agent picks up the service's own `create`/`update`/`delete`/`link` actions:
-
-```hcl
-module "service_definition_endpoint_exposer" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition?ref=<tofu-modules version>"
-
-  nrn               = var.nrn
-  repository_org    = "nullplatform"
-  repository_name   = "services-endpoint-exposer"
-  repository_branch = "main" # or the branch you're testing
-  service_path      = "" # specs live at repo root
-  service_name      = "Endpoint Exposer"
-  available_links   = ["connect"]
-}
-
-module "service_definition_channel_association_endpoint_exposer" {
-  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_definition_agent_association?ref=<tofu-modules version>"
-
-  nrn                           = var.nrn
-  api_key                       = var.np_api_key
-  tags_selectors                = { "owner" = "my-agent", "environment" = "{$context.service.dimensions.environment}" }
-  service_specification_slug    = module.service_definition_endpoint_exposer.service_specification_slug
-  repository_service_spec_repo  = "nullplatform/services-endpoint-exposer"
-  service_path                  = "" # entrypoint lives at repo root
-}
-```
-
-Pin `<tofu-modules version>` to a real tag from [`nullplatform/tofu-modules` releases](https://github.com/nullplatform/tofu-modules/releases) — check its `CHANGELOG.md` for breaking changes before bumping.
-
-Choose the authorization scheme here, at install time. `specs/install` requires `auth_type` and returns it, with `INGRESS_TYPE`, in `agent_extra_envs` for the agent's `extra_envs` (step 2). The variable alone doesn't change the agent: it takes effect once that output reaches the agent. `aws-avp` works only for services created before the domain + links model. Copy the variable, the local and the output along with the module calls. The agent module reads the local: a root module can't read its own outputs.
+Pick ONE release of this repository (the latest is on its [releases page](https://github.com/nullplatform/services-endpoint-exposer/releases)) and install its version; with `aws-avp`, the requirements module of step 2 is referenced at the same release.
 
 ```hcl
-variable "auth_type" {
-  description = "Authorization scheme: none, aws-cognito or aws-avp"
-  type        = string
+# ── nullplatform layer ───────────────────────────────────────────────
+# The same module a catalog entry with `install_package` becomes. For a
+# service the installation is the whole nullplatform side, channel included.
+module "endpoint_exposer" {
+  source = "git::https://github.com/nullplatform/tofu-modules.git//nullplatform/service_package_installation?ref=v9.16.0"
 
-  validation {
-    condition     = contains(["none", "aws-cognito", "aws-avp"], var.auth_type)
-    error_message = "auth_type must be one of: none, aws-cognito, aws-avp."
-  }
+  nrn                  = var.nrn
+  package_slug         = "np-http-route-access-control"
+  package_version      = "X.Y.Z" # the same release, without the v
+  agent_tags_selectors = { cluster = "runtime" } # must match the agent's TAGS
 }
-
-locals {
-  agent_extra_envs = { INGRESS_TYPE = "istio", AUTH_TYPE = var.auth_type }
-}
-
-output "agent_extra_envs" {
-  value = local.agent_extra_envs
-}
+# Keeping channels in a separate bindings layer instead? Use
+# nullplatform/package_installation here and service_definition_agent_association
+# there, with package_slug = "np-http-route-access-control".
 ```
 
-> **Upgrade note:** `auth_type` is a new required variable of `specs/install`: `plan` fails until it is set. Set it to the agent's current `AUTH_TYPE`. If the agent has none set, check the stored services before choosing `none`: unset is not the same as `none` (see [step 2](#2-set-agent-environment-variables)), and `none` drops auth from services that have it.
+The authorization scheme is chosen on the agent, in `AUTH_TYPE` (step 2): the package carries no install-time variable for it. `aws-avp` works only for services created before the domain + links model. To upgrade, move `package_version` to the new release. See tofu-modules' [`service_package_installation`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/service_package_installation) for its inputs and outputs.
+
+> **Coming from a copy registered with the former `specs/install`?** Its `auth_type` variable is now the agent's `AUTH_TYPE`: set it to the same value. If the agent has none set, check the stored services before choosing `none`: unset is not the same as `none` (see [step 2](#2-set-agent-environment-variables)), and `none` drops auth from services that have it.
 
 ### 2. Set agent environment variables
 
@@ -191,13 +163,11 @@ This is global (applies to every environment's `RequestAuthentication`), not per
 | `AVP_POLICY_STORE_ARN_<ENV>` | ARN of the Amazon Verified Permissions Policy Store | `AVP_POLICY_STORE_ARN_PRODUCTION=arn:aws:verifiedpermissions::123456789:policy-store/AbCdEf` |
 | `OPA_PROVIDER_NAME` | Name of the OPA ext-authz provider in the cluster | `opa-ext-authz` |
 
-With `aws-avp`, the service also calls the Amazon Verified Permissions API directly, so the agent needs AWS credentials for that. [`specs/requirements/aws`](./specs/requirements/aws) is a reference implementation of the IAM role the agent assumes — copy its resources into your own project once per cluster rather than sourcing it from this repo (see the note at the top of this section), then pass the role output to the agent:
+With `aws-avp`, the service also calls the Amazon Verified Permissions API directly, so the agent needs AWS credentials for that. [`specs/requirements/aws`](./specs/requirements/aws) creates the IAM role the agent assumes, once per cluster, at the same release as the package; pass its output to the agent:
 
 ```hcl
-# Illustrative — read specs/requirements/aws/main.tf and copy its resources
-# into your own project instead of sourcing this path directly.
 module "endpoint_exposer_requirements" {
-  source = "git::https://github.com/nullplatform/services-endpoint-exposer.git//specs/requirements/aws?ref=main"
+  source = "git::https://github.com/nullplatform/services-endpoint-exposer.git//specs/requirements/aws?ref=vX.Y.Z"
 
   cluster_name = var.cluster_name
 }
@@ -273,14 +243,12 @@ module "agent" {
 
   extra_envs = {
     INGRESS_TYPE                     = "istio"
-    AUTH_TYPE                        = "aws-cognito" # the auth_type chosen in step 1
+    AUTH_TYPE                        = "aws-cognito" # the scheme chosen in step 1
     COGNITO_USER_POOL_ARN_DEV        = "arn:aws:cognito-idp:us-east-1:123456789:userpool/us-east-1_AbCdEf"
     COGNITO_USER_POOL_ARN_PRODUCTION = "arn:aws:cognito-idp:us-east-1:123456789:userpool/us-east-1_XyZwVu"
   }
 }
 ```
-
-With the `agent_extra_envs` local from step 1, drop the `INGRESS_TYPE` and `AUTH_TYPE` entries and merge it in instead, e.g. `extra_envs = merge(local.agent_extra_envs, { COGNITO_USER_POOL_ARN_DEV = "..." })`.
 
 ### 3. Register the `container-scope-override` on the target scope
 
@@ -288,7 +256,7 @@ The `container-scope-override/` directory injects a `sync_exposer` step into sco
 
 The step fails the deploy when an np call fails (it can't tell what to update), when the update of an active link or service is refused or ends failed, and when an update times out. A link or service that was already failed and whose update the platform refuses or fails again (e.g. a link whose create never succeeded) is only reported.
 
-The step finds the exposer by its service specification slug, which depends on how the spec was registered: `endpoint-exposer` through the `service_definition` module (`specs/install`, which derives it from the spec name) and `http-route-access-control` from `specs/service-spec.json.tpl` (the default in `container-scope-override/values.yaml`). Both are looked up. The same spec listed more than once counts as one. If both specs are visible, the step syncs the one the application's exposers use, and an application without exposers deploys as usual. Only an application with exposers under both specs fails, asking for `EXPOSER_SERVICE_SPECIFICATION_SLUG` in the agent environment, which names the one to sync; set it too for a spec registered under any other slug. Without a matching spec the step logs `WARNING: no service specification with slug ...` and skips the sync, and the deploy passes: an application that never installed the exposer goes through here on every deploy.
+The step finds the exposer by its service specification slug. By default it looks up `http-route-access-control` (the default in `container-scope-override/values.yaml`, the slug of a copy registered from `specs/service-spec.json.tpl`) and `endpoint-exposer` (a copy registered through the `service_definition` module, which derives it from the name). **The installed package's specification is `np-http-route-access-control`, which is neither: set `EXPOSER_SERVICE_SPECIFICATION_SLUG=np-http-route-access-control` in the agent environment.** The same spec listed more than once counts as one. If both specs are visible, the step syncs the one the application's exposers use, and an application without exposers deploys as usual. Only an application with exposers under both specs fails, asking for `EXPOSER_SERVICE_SPECIFICATION_SLUG` in the agent environment, which names the one to sync; set it too for a spec registered under any other slug. Without a matching spec the step logs `WARNING: no service specification with slug ...` and skips the sync, and the deploy passes: an application that never installed the exposer goes through here on every deploy.
 
 This mechanism only activates when the scope agent entrypoint receives `--overrides-path=` pointing to the override directory. That flag must be set on the notification channel that fires for the **target scope** — i.e. the scope specification used by apps that expose routes through this service — not on the service channel from step 1 above.
 
@@ -310,9 +278,13 @@ module "scope_definition_agent_association" {
 }
 ```
 
-> **Do not add a second `scope_definition_agent_association` call for the same scope just to carry the override** — e.g. by calling `specs/install`'s wrapper with `enable_scope_channel = true` (or writing your own `module "endpoint_exposer_scope_channel" { ... }`) alongside a module that already registers that scope's channel. The channel's `filters` are built solely from `scope_specification_slug` / `scope_specification_id`; `enabled_override` doesn't change them, it only appends `--overrides-path=...` to the channel's `cmdline`. Two module calls pointed at the same scope produce two `nullplatform_notification_channel` resources with **identical filters**, so every action notification for that scope fires both channels — the scope's base entrypoint logic runs twice, once per channel, and one of the two invocations additionally triggers the override sync. Only register a brand-new, dedicated channel for the override when the target scope has **no** existing agent association in your project at all.
+> **Do not add a second `scope_definition_agent_association` call for the same scope just to carry the override** — e.g. by writing your own `module "endpoint_exposer_scope_channel" { ... }` alongside a module that already registers that scope's channel. The channel's `filters` are built solely from `scope_specification_slug` / `scope_specification_id`; `enabled_override` doesn't change them, it only appends `--overrides-path=...` to the channel's `cmdline`. Two module calls pointed at the same scope produce two `nullplatform_notification_channel` resources with **identical filters**, so every action notification for that scope fires both channels — the scope's base entrypoint logic runs twice, once per channel, and one of the two invocations additionally triggers the override sync. Only register a brand-new, dedicated channel for the override when the target scope has **no** existing agent association in your project at all.
 
 Without this override wired into the scope's channel, HTTPRoutes will point to stale backend service names after a blue/green deploy and traffic will break.
+
+## How the package is published
+
+Every release publishes a new revision of the package from this repository, in the same run that pushes the worker image ([`.github/workflows/release.yml`](./.github/workflows/release.yml)): the `publish-package` job applies [`publish`](./publish), a stack on tofu-modules' `service_package_publish`, which pins this tag's specs and the image by digest. The package version is the release tag, as for the image. The stack keeps its state where the organization secrets `PACKAGE_STATE_AWS_ACCOUNT_ID`, `PACKAGE_TFSTATE_BUCKET` and `PACKAGE_TFSTATE_REGION` point; the state role is `github-actions-<repository>-package-state` in that account, by convention.
 
 ---
 
@@ -343,8 +315,8 @@ This means a single agent deployment can serve multiple environments, each with 
 ├── specs/
 │   ├── service-spec.json.tpl
 │   ├── links/connect.json.tpl
-│   ├── install/             # Reference OpenTofu implementation of the nullplatform registration (see "Installation with tofu modules" — illustrative, not meant to be sourced directly)
-│   └── requirements/aws/    # Reference OpenTofu implementation of the AVP IAM role (aws-avp only — same caveat as install/)
+│   └── requirements/aws/    # IAM role for the Verified Permissions calls (aws-avp only)
+├── publish/                 # publishes the service as a package (release workflow only)
 ├── templates/istio/         # Kubernetes resource templates (httproute, authorizationpolicy, request-authentication)
 ├── workflows/istio/         # service: create/update/delete/read · link: link (create/update), unlink
 │   └── legacy/              # services with inline routes (pre domain + links model)
