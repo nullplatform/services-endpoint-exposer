@@ -94,6 +94,15 @@ teardown() {
   assert_output --partial "Endpoint exposer one updated"
 }
 
+@test "sync_exposer: finds the installed package's specification without configuration" {
+  export NP_SPEC_SLUG="np-http-route-access-control"
+
+  run bash "$SCRIPT"
+
+  assert_success
+  assert_output --partial "Endpoint exposer one updated"
+}
+
 @test "sync_exposer: fails when the app has exposers under both visible specs and none is configured" {
   export NP_SPECS='[{"id":"spec-1","slug":"http-route-access-control"},{"id":"spec-2","slug":"endpoint-exposer"}]'
   export NP_SERVICES='[
