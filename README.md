@@ -114,7 +114,7 @@ module "endpoint_exposer" {
 
 The authorization scheme is chosen on the agent, in `AUTH_TYPE` (step 2): the package carries no install-time variable for it. `aws-avp` works only for services created before the domain + links model. To upgrade, move `package_version` to the new release. See tofu-modules' [`service_package_installation`](https://github.com/nullplatform/tofu-modules/tree/main/nullplatform/service_package_installation) for its inputs and outputs.
 
-> **Coming from a copy registered with the former `specs/install`?** Its `auth_type` variable is now the agent's `AUTH_TYPE`: set it to the same value. If the agent has none set, check the stored services before choosing `none`: unset is not the same as `none` (see [step 2](#2-set-agent-environment-variables)), and `none` drops auth from services that have it.
+> **Coming from a copy registered with the former `specs/install`?** Its `auth_type` variable is now the agent's `AUTH_TYPE`: set it to the same value. If the agent has none set, check the stored services before choosing `none`: unset is not the same as `none` (see [step 2](#2-set-agent-environment-variables)), and `none` drops auth from services that have it. The copy itself keeps working; if you sourced `specs/install` as a module, pin its `?ref` to a release that still has it.
 
 ### 2. Set agent environment variables
 
