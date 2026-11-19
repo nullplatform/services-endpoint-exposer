@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.2.0](https://github.com/nullplatform/services-endpoint-exposer/compare/v2.1.1...v2.2.0) (2026-11-19)
+
+
+### Features
+
+* **package:** publish the service as a global package ([1c79ba8](https://github.com/nullplatform/services-endpoint-exposer/commit/1c79ba8cd2081746affea80bef063ff9f6e93092))
+* **package:** publish the service as a global package ([e24b7f5](https://github.com/nullplatform/services-endpoint-exposer/commit/e24b7f55d9c12f4291f1c7718a7956d68d705a6c))
+
+
+### Bug Fixes
+
+* **override:** look up the installed package's exposer specification by default ([b8ced8b](https://github.com/nullplatform/services-endpoint-exposer/commit/b8ced8b191f3ccb297e9911f71b9a322ea96cfc9))
+* **override:** look up the installed package's exposer specification by default ([6ccd50b](https://github.com/nullplatform/services-endpoint-exposer/commit/6ccd50bb969ea72701a8bf33be206c656609c2af))
+
 ## [2.1.1](https://github.com/nullplatform/services-endpoint-exposer/compare/v2.1.0...v2.1.1) (2026-11-11)
 
 
