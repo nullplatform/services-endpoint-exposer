@@ -257,7 +257,14 @@ The step fails the deploy when an np call fails (it can't tell what to update), 
 
 The step finds the exposer by its service specification slug. By default it looks up `np-http-route-access-control` (the installed package), `http-route-access-control` (the default in `container-scope-override/values.yaml`, the slug of a copy registered from `specs/service-spec.json.tpl`) and `endpoint-exposer` (a copy registered through the `service_definition` module, which derives it from the name). The same spec listed more than once counts as one. If more than one is visible, the step syncs the one the application's exposers use, and an application without exposers deploys as usual. Only an application with exposers under more than one of them fails, asking for `EXPOSER_SERVICE_SPECIFICATION_SLUG` in the agent environment, which names the one to sync; set it too for a spec registered under any other slug. Without a matching spec the step logs `WARNING: no service specification with slug ...` and skips the sync, and the deploy passes: an application that never installed the exposer goes through here on every deploy.
 
-This mechanism only activates when the scope agent entrypoint receives `--overrides-path=` pointing to the override directory. That flag must be set on the notification channel that fires for the **target scope** — i.e. the scope specification used by apps that expose routes through this service — not on the service channel from step 1 above.
+This mechanism only activates when the entrypoint of the **target scope** (the scope specification used by apps that expose routes through this service, not the service channel from step 1) receives `--overrides-path=` pointing to the override directory. How it gets there depends on how the agent runs the scope:
+
+- **Legacy agent** (the agent clones repositories and runs the scope itself): through the scope's notification channel, see [Legacy agent](#legacy-agent).
+- **Worker orchestrator** (`worker_orchestrator = true`, the scope runs as a `package-exec` worker): through the worker pod, see [Worker orchestrator mode](#worker-orchestrator-mode).
+
+Without this override wired into the target scope, HTTPRoutes will point to stale backend service names after a blue/green deploy and traffic will break. Once wired, the deploy actions of the target scope show a `sync_exposer` step in their logs.
+
+#### Legacy agent
 
 `enabled_override` / `override_repo_path` / `overrides_service_path` are extra inputs on the standard `nullplatform/tofu-modules//nullplatform/scope_definition_agent_association` module — not a separate mechanism. **A given scope specification should only ever have one `scope_definition_agent_association` module call.** If your project already registers a notification channel for that scope (it almost always does — that's what makes the scope's own deploy/lifecycle actions work at all), add these three inputs to that **same** module call:
 
@@ -279,7 +286,51 @@ module "scope_definition_agent_association" {
 
 > **Do not add a second `scope_definition_agent_association` call for the same scope just to carry the override** — e.g. by writing your own `module "endpoint_exposer_scope_channel" { ... }` alongside a module that already registers that scope's channel. The channel's `filters` are built solely from `scope_specification_slug` / `scope_specification_id`; `enabled_override` doesn't change them, it only appends `--overrides-path=...` to the channel's `cmdline`. Two module calls pointed at the same scope produce two `nullplatform_notification_channel` resources with **identical filters**, so every action notification for that scope fires both channels — the scope's base entrypoint logic runs twice, once per channel, and one of the two invocations additionally triggers the override sync. Only register a brand-new, dedicated channel for the override when the target scope has **no** existing agent association in your project at all.
 
-Without this override wired into the scope's channel, HTTPRoutes will point to stale backend service names after a blue/green deploy and traffic will break.
+#### Worker orchestrator mode
+
+In worker mode the agent doesn't run scope actions itself: it starts a worker pod per package, from that package's image, and runs the actions there. The `enabled_override` / `override_repo_path` / `overrides_service_path` inputs do nothing here: `scope_definition_agent_association` only appends `--overrides-path` in the legacy branch, and the Containers scope image doesn't ship `container-scope-override/`. Wire the override into the worker pod instead. The scope images start with `worker-bridge`, which reads `NP_OVERRIDES_PATH` (comma-separated) from the pod environment and passes each entry to the entrypoint as `--overrides-path=`.
+
+Add a patch for the Containers scope package to `worker.patches` of the agent module (see [Example — OpenTofu agent module](#example--opentofu-agent-module)): an init container fetches this repository's release into a volume, and `NP_OVERRIDES_PATH` points the `worker` container at `container-scope-override/` inside it.
+
+```hcl
+module "agent" {
+  # ...
+  worker_orchestrator = true
+
+  worker = {
+    patches = [
+      # ...your other patches
+      {
+        target = { package = "containers" }
+        merge = {
+          spec = {
+            volumes = [{ name = "exposer-override", emptyDir = {} }]
+            initContainers = [{
+              name         = "fetch-exposer-override"
+              image        = "public.ecr.aws/docker/library/alpine:3.20"
+              command      = ["sh", "-c", "wget -qO- https://github.com/nullplatform/services-endpoint-exposer/archive/refs/tags/${var.endpoint_exposer_version}.tar.gz | tar -xzC /overrides --strip-components=1"]
+              volumeMounts = [{ name = "exposer-override", mountPath = "/overrides" }]
+            }]
+            containers = [{
+              name         = "worker"
+              volumeMounts = [{ name = "exposer-override", mountPath = "/app/overrides/exposer", readOnly = true }]
+              env          = [{ name = "NP_OVERRIDES_PATH", value = "/app/overrides/exposer/container-scope-override" }]
+            }]
+          }
+        }
+      },
+    ]
+  }
+}
+```
+
+- `endpoint_exposer_version`: the release tag of the exposer package installed in step 1 (e.g. `v2.2.0`), so the sync matches the exposer it drives.
+- `target.package`: the name of the Containers scope package in your installation, if it isn't `containers`.
+- The init image only needs `sh`, `wget` and `tar`; pin or mirror it per your registry policy.
+- The patch merges into the worker pod by name: `worker` joins the existing container, and each `env` entry is added, or replaces a variable of the same name. If the worker already sets `NP_OVERRIDES_PATH`, list both paths in one comma-separated value.
+- Workers don't inherit the agent's environment. If the sync needs `EXPOSER_SERVICE_SPECIFICATION_SLUG` (see above), set it in this patch's `env`.
+- The init container runs each time the worker pod is created. If GitHub can't be reached it fails and retries, the pod never becomes ready, and actions of the Containers scope can't run until the download succeeds. Mirror the release if the cluster has restricted egress.
+- After an agent restart, an existing worker Deployment is kept as it is. A changed patch applies when the agent renders the worker again: on the package's next action, or when the idle reaper recycles it.
 
 ## How the package is published
 
