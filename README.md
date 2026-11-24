@@ -259,8 +259,10 @@ The step finds the exposer by its service specification slug. By default it look
 
 This mechanism only activates when the entrypoint of the **target scope** (the scope specification used by apps that expose routes through this service, not the service channel from step 1) receives `--overrides-path=` pointing to the override directory. How it gets there depends on how the agent runs the scope:
 
-- **Legacy agent** (the agent clones repositories and runs the scope itself): through the scope's notification channel, below.
+- **Legacy agent** (the agent clones repositories and runs the scope itself): through the scope's notification channel, see [Legacy agent](#legacy-agent).
 - **Worker orchestrator** (`worker_orchestrator = true`, the scope runs as a `package-exec` worker): through the worker pod, see [Worker orchestrator mode](#worker-orchestrator-mode).
+
+Without this override wired into the target scope, HTTPRoutes will point to stale backend service names after a blue/green deploy and traffic will break. Once wired, the deploy actions of the target scope show a `sync_exposer` step in their logs.
 
 #### Legacy agent
 
@@ -286,9 +288,9 @@ module "scope_definition_agent_association" {
 
 #### Worker orchestrator mode
 
-With `worker_orchestrator = true` the inputs above do nothing: `scope_definition_agent_association` only appends `--overrides-path` in the legacy branch, and the worker runs the Containers scope image, which doesn't ship `container-scope-override/`. Wire the override into the worker pod instead. The scope images start with `worker-bridge`, which reads `NP_OVERRIDES_PATH` (comma-separated) from the pod environment and passes each entry to the entrypoint as `--overrides-path=`.
+In worker mode the agent doesn't run scope actions itself: it starts a worker pod per package, from that package's image, and runs the actions there. The `enabled_override` / `override_repo_path` / `overrides_service_path` inputs do nothing here: `scope_definition_agent_association` only appends `--overrides-path` in the legacy branch, and the Containers scope image doesn't ship `container-scope-override/`. Wire the override into the worker pod instead. The scope images start with `worker-bridge`, which reads `NP_OVERRIDES_PATH` (comma-separated) from the pod environment and passes each entry to the entrypoint as `--overrides-path=`.
 
-Add a patch for the `containers` package to the agent module's `worker.patches`: an init container fetches this repository's release into a volume, and `NP_OVERRIDES_PATH` points the `worker` container at `container-scope-override/` inside it. Use the same release as the installed exposer package.
+Add a patch for the Containers scope package to `worker.patches` of the agent module (see [Example — OpenTofu agent module](#example--opentofu-agent-module)): an init container fetches this repository's release into a volume, and `NP_OVERRIDES_PATH` points the `worker` container at `container-scope-override/` inside it.
 
 ```hcl
 module "agent" {
@@ -297,6 +299,7 @@ module "agent" {
 
   worker = {
     patches = [
+      # ...your other patches
       {
         target = { package = "containers" }
         merge = {
@@ -321,12 +324,13 @@ module "agent" {
 }
 ```
 
-`endpoint_exposer_version` is a release tag of this repository (e.g. `v2.2.0`). The patch is a strategic merge, so the `env` entry joins the worker's other variables by name. If the package has a different name in your installation, adjust `target.package`.
-
-- The init container runs on every worker start. If GitHub can't be reached, the worker stays in `Init` and every action of the Containers scope is blocked until it can.
-- After a restart, the agent adopts an existing worker Deployment as it is. A changed patch applies on the package's next action, or when the idle reaper recycles the worker.
-
-Without this override wired into the target scope, HTTPRoutes will point to stale backend service names after a blue/green deploy and traffic will break.
+- `endpoint_exposer_version`: the release tag of the exposer package installed in step 1 (e.g. `v2.2.0`), so the sync matches the exposer it drives.
+- `target.package`: the name of the Containers scope package in your installation, if it isn't `containers`.
+- The init image only needs `sh`, `wget` and `tar`; pin or mirror it per your registry policy.
+- The patch merges into the worker pod by name: `worker` joins the existing container, and each `env` entry is added, or replaces a variable of the same name. If the worker already sets `NP_OVERRIDES_PATH`, list both paths in one comma-separated value.
+- Workers don't inherit the agent's environment. If the sync needs `EXPOSER_SERVICE_SPECIFICATION_SLUG` (see above), set it in this patch's `env`.
+- The init container runs each time the worker pod is created. If GitHub can't be reached it fails and retries, the pod never becomes ready, and actions of the Containers scope can't run until the download succeeds. Mirror the release if the cluster has restricted egress.
+- After an agent restart, an existing worker Deployment is kept as it is. A changed patch applies when the agent renders the worker again: on the package's next action, or when the idle reaper recycles it.
 
 ## How the package is published
 
